@@ -16,6 +16,7 @@ import {
   buildTimelines,
   findActiveSegmentAtGameTime,
   gameTimeToPlaybackTime,
+  isGapSegment,
   playIndexToPlaybackTime,
   playbackTimeToClipTime,
   resolveClipIdFromVideo,
@@ -61,7 +62,7 @@ export function GamePlayer({
     [clips],
   );
 
-  const { playbackDuration, playSegments } = useMemo(
+  const { segments, playbackDuration, playSegments } = useMemo(
     () => buildTimelines(clips, plays),
     [clips, plays],
   );
@@ -287,9 +288,25 @@ export function GamePlayer({
       },
     });
 
-  const playList = (
+  const renderPlayList = (includeGaps: boolean) => (
     <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto max-lg:landscape:max-h-none max-lg:landscape:flex-1 md:max-h-[calc(100vh-280px)]">
-      {playSegments.map((segment) => {
+      {(includeGaps ? segments : playSegments).map((segment) => {
+        if (isGapSegment(segment)) {
+          return (
+            <div
+              key={`gap-${segment.globalStart}-${segment.globalEnd}`}
+              className="rounded-lg border border-dashed border-muted-foreground/35 bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium uppercase tracking-wide">Gap</span>
+                <span className="tabular-nums">
+                  {formatDuration(segment.duration)}
+                </span>
+              </div>
+            </div>
+          );
+        }
+
         const index = segment.playIndex;
         const play = segment.play;
 
@@ -299,14 +316,14 @@ export function GamePlayer({
             type="button"
             onClick={() => seekToPlay(index, true)}
             className={cn(
-              "rounded-xl border p-3.5 text-left transition-all",
+              "rounded-xl border p-3.5 text-left transition-all max-lg:landscape:p-2.5",
               index === currentIndex
                 ? "border-primary/40 bg-primary/5 shadow-sm ring-1 ring-primary/20"
                 : "border-border/80 bg-card hover:border-primary/20 hover:bg-muted/50",
             )}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-foreground">
+              <span className="font-semibold text-foreground max-lg:landscape:text-sm">
                 Play {segment.playNumber}
               </span>
               <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
@@ -314,12 +331,12 @@ export function GamePlayer({
               </span>
             </div>
             {play.offenseTeam && (
-              <p className="mt-1.5 text-xs font-medium text-accent">
+              <p className="mt-1.5 text-xs font-medium text-accent max-lg:landscape:mt-1 max-lg:landscape:line-clamp-1">
                 Offense: {play.offenseTeam}
               </p>
             )}
             {play.notes && (
-              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground max-lg:landscape:line-clamp-1">
                 {play.notes}
               </p>
             )}
@@ -343,8 +360,8 @@ export function GamePlayer({
     currentSegment?.playNumber ?? currentIndex + 1;
 
   return (
-    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,36%)] max-lg:landscape:items-stretch max-lg:landscape:gap-3 lg:grid-cols-[1fr_340px]">
-      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
+    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,36%)] max-lg:landscape:items-stretch max-lg:landscape:gap-2 lg:grid-cols-[1fr_340px]">
+      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
         <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
           <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
             <video
@@ -375,7 +392,7 @@ export function GamePlayer({
           </div>
         </div>
 
-        <div className="surface-card space-y-2 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
+        <div className="surface-card space-y-2 p-4 max-lg:landscape:hidden">
           <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
             <span>{formatDuration(playbackTime)}</span>
             <span>{formatDuration(playbackDuration)}</span>
@@ -388,7 +405,7 @@ export function GamePlayer({
             aria-valuemax={playbackDuration}
             aria-valuenow={playbackTime}
             tabIndex={0}
-            className="relative h-12 max-lg:landscape:h-10 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
             onPointerDown={onTimelinePointerDown}
             onKeyDown={(e) => {
               if (e.key === "ArrowRight") {
@@ -450,12 +467,12 @@ export function GamePlayer({
               onPointerDown={onPlayheadPointerDown}
             />
           </div>
-          <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
+          <p className="text-center text-xs text-muted-foreground">
             Drag the timeline or playhead to scrub
           </p>
         </div>
 
-        <div className="surface-card flex items-center justify-between gap-3 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
+        <div className="surface-card flex items-center justify-between gap-3 p-4 max-lg:landscape:shrink-0 max-lg:landscape:px-3 max-lg:landscape:py-2">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -510,7 +527,7 @@ export function GamePlayer({
               <SkipForward className="h-4 w-4" />
             </Button>
           </div>
-          <p className="text-sm font-medium text-muted-foreground">
+          <p className="text-sm font-medium text-muted-foreground max-lg:landscape:hidden">
             {playSegments.findIndex((s) => s.playIndex === currentIndex) + 1}{" "}
             of {playSegments.length}
           </p>
@@ -533,20 +550,20 @@ export function GamePlayer({
                   {awayTeam} @ {homeTeam}
                 </SheetTitle>
               </SheetHeader>
-              <div className="mt-4">{playList}</div>
+              <div className="mt-4">{renderPlayList(false)}</div>
             </SheetContent>
           </Sheet>
         </div>
       </div>
 
-      <Card className="surface-card hidden max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col lg:flex">
-        <CardHeader className="border-b border-border/60 pb-4 max-lg:landscape:shrink-0 max-lg:landscape:py-3 max-lg:landscape:pb-2">
-          <CardTitle className="font-heading text-lg max-lg:landscape:text-base">
+      <Card className="surface-card hidden max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col lg:flex">
+        <CardHeader className="border-b border-border/60 pb-4 max-lg:landscape:shrink-0 max-lg:landscape:py-2 max-lg:landscape:pb-2">
+          <CardTitle className="font-heading text-lg max-lg:landscape:text-sm">
             Play list
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 max-lg:landscape:p-3">
-          {playList}
+        <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 max-lg:landscape:p-2">
+          {renderPlayList(true)}
         </CardContent>
       </Card>
     </div>

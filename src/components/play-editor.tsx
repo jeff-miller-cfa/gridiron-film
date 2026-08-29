@@ -459,8 +459,8 @@ export function PlayEditor({
   const timelineSegments = showGapsOnTimeline ? segments : playSegments;
 
   return (
-    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:items-stretch max-lg:landscape:gap-3 lg:grid-cols-[1fr_380px]">
-      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
+    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:items-stretch max-lg:landscape:gap-2 lg:grid-cols-[1fr_380px]">
+      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
         <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
           <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
             <video
@@ -520,7 +520,7 @@ export function PlayEditor({
           </Button>
         </div>
 
-        <div className="surface-card space-y-2 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
+        <div className="surface-card space-y-2 p-4 max-lg:landscape:hidden">
           <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
             <span>{formatDuration(playbackTime)}</span>
             <div className="flex items-center gap-2">
@@ -553,7 +553,7 @@ export function PlayEditor({
             role="slider"
             aria-label="Stitched game timeline"
             tabIndex={0}
-            className="relative h-12 max-lg:landscape:h-10 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
             onPointerDown={onTimelinePointerDown}
           >
             {timelineSegments.map((segment) => {
@@ -628,7 +628,7 @@ export function PlayEditor({
               onPointerDown={onPlayheadPointerDown}
             />
           </div>
-          <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
+          <p className="text-center text-xs text-muted-foreground">
             Drag the timeline or playhead to scrub — click a play to jump
             {showGapsOnTimeline && gapSegments.length > 0
               ? ", gray segments can be restored"
@@ -637,28 +637,39 @@ export function PlayEditor({
         </div>
       </div>
 
-      <Card className="surface-card max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col">
+      <Card className="surface-card max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col">
         <CardHeader className="border-b border-border/60 py-3 max-lg:landscape:shrink-0 max-lg:landscape:py-2">
           <CardTitle className="font-heading text-sm">All plays</CardTitle>
         </CardHeader>
         <CardContent
           ref={playListRef}
-          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3 max-lg:landscape:max-h-none max-lg:landscape:flex-1 max-lg:landscape:min-h-0"
+          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3 max-lg:landscape:max-h-none max-lg:landscape:flex-1 max-lg:landscape:min-h-0 max-lg:landscape:p-2"
         >
-          {sortedPlays.length === 0 && (
+          {playSegments.length === 0 && gapSegments.length === 0 && (
             <p className="text-sm text-muted-foreground">No plays yet.</p>
           )}
-          {sortedPlays.map((play) => {
+          {segments.map((segment) => {
+            if (isGapSegment(segment)) {
+              return (
+                <button
+                  key={`gap-${segment.globalStart}-${segment.globalEnd}`}
+                  type="button"
+                  title="Restore deleted play"
+                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-muted-foreground/35 bg-muted/50 px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-foreground"
+                  onClick={() => onRestoreGap(gapToPlayGaps(segment))}
+                >
+                  <span className="font-medium uppercase tracking-wide">Gap</span>
+                  <span className="tabular-nums">
+                    {formatDuration(segment.duration)}
+                  </span>
+                </button>
+              );
+            }
+
+            const play = segment.play;
             const playId = playIdentityKey(play);
-            const playNumber = playSegments.find(
-              (s) => playIdentityKey(s.play) === playId,
-            )?.playNumber;
-            const segment = playSegments.find(
-              (s) => playIdentityKey(s.play) === playId,
-            );
-            const duration = segment
-              ? segment.duration
-              : play.endTime - play.startTime;
+            const playNumber = segment.playNumber;
+            const duration = segment.duration;
             const hasNotes = Boolean(play.notes?.trim());
             const notesOpen = notesEditorPlayId === playId;
 

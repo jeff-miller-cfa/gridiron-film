@@ -220,12 +220,12 @@ export default function AdminGamePage() {
 
   return (
     <PageShell variant="admin">
-      <main className="mx-auto max-w-6xl px-4 py-6 max-lg:landscape:px-3 max-lg:landscape:py-3 sm:px-6 sm:py-8">
-        <div className="surface-card mb-8 p-6 max-lg:landscape:mb-3 max-lg:landscape:p-3">
+      <main className="mx-auto max-w-6xl px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8">
+        <div className="surface-card mb-8 p-6 max-lg:landscape:hidden">
           <div className="flex flex-col gap-4 max-lg:landscape:gap-2 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
-              <div className="flex items-center gap-3 max-lg:landscape:gap-2">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent max-lg:landscape:hidden">
+              <div className="flex items-center gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
                   Game editor
                 </p>
                 <span
@@ -241,12 +241,12 @@ export default function AdminGamePage() {
                   {saveStatus === "error" && "Save failed — retrying on next edit"}
                 </span>
               </div>
-              <h1 className="mt-2 font-heading text-3xl font-bold max-lg:landscape:mt-0 max-lg:landscape:truncate max-lg:landscape:text-xl">
+              <h1 className="mt-2 font-heading text-3xl font-bold">
                 <span className="text-muted-foreground">{game.awayTeam}</span>
                 <span className="mx-2 font-normal text-border">@</span>
                 {game.homeTeam}
               </h1>
-              <div className="mt-4 flex flex-wrap gap-2 max-lg:landscape:hidden">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <Badge variant="secondary" className="gap-1.5">
                   <MapPin className="h-3 w-3" />
                   {game.stadium}
@@ -263,7 +263,7 @@ export default function AdminGamePage() {
                 </Badge>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 max-lg:landscape:shrink-0">
+            <div className="flex flex-wrap gap-2">
               <Link
                 href={`/games/${gameId}`}
                 target="_blank"
@@ -291,9 +291,17 @@ export default function AdminGamePage() {
         <Tabs
           value={activeView}
           onValueChange={(value) => setActiveView(parseViewMode(value))}
-          className="space-y-6 max-lg:landscape:space-y-3"
+          className={cn(
+            "space-y-6 max-lg:landscape:space-y-2",
+            activeView === "plays" && "max-lg:landscape:space-y-0",
+          )}
         >
-          <TabsList className="h-11 w-full justify-start rounded-xl bg-muted/80 p-1 max-lg:landscape:h-9 sm:w-auto">
+          <TabsList
+            className={cn(
+              "h-11 w-full justify-start rounded-xl bg-muted/80 p-1 sm:w-auto",
+              activeView === "plays" && "max-lg:landscape:hidden",
+            )}
+          >
             <TabsTrigger value="upload" className="rounded-lg px-5">
               Upload
             </TabsTrigger>
