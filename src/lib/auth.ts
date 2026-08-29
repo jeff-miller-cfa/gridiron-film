@@ -1,24 +1,32 @@
 import { SignJWT, jwtVerify } from "jose";
+import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, AUTH_SECRET } from "@/config/auth";
 
 const secret = new TextEncoder().encode(AUTH_SECRET);
 
-export async function createAdminSession() {
-  const token = await new SignJWT({ role: "admin" })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(secret);
-
-  const cookieStore = await cookies();
-  cookieStore.set(AUTH_COOKIE, token, {
+export function getAdminSessionCookieOptions(): Partial<ResponseCookie> {
+  return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
-  });
+  };
+}
+
+export async function signAdminToken(): Promise<string> {
+  return new SignJWT({ role: "admin" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime("7d")
+    .sign(secret);
+}
+
+export async function createAdminSession() {
+  const token = await signAdminToken();
+  const cookieStore = await cookies();
+  cookieStore.set(AUTH_COOKIE, token, getAdminSessionCookieOptions());
 }
 
 export async function clearAdminSession() {

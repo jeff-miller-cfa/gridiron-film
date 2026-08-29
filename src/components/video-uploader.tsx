@@ -86,18 +86,22 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
   };
 
   return (
-    <div className="space-y-4 rounded-xl border border-dashed p-6">
+    <div className="space-y-4 rounded-2xl border-2 border-dashed border-primary/20 bg-primary/[0.02] p-8 transition-colors hover:border-primary/30 hover:bg-primary/[0.04]">
       <div className="text-center">
-        <Upload className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
-        <p className="font-medium">Upload game footage</p>
-        <p className="text-sm text-muted-foreground">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+          <Upload className="h-7 w-7" />
+        </div>
+        <p className="font-heading text-lg font-semibold text-foreground">
+          Upload game footage
+        </p>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
           Select multiple clips — they&apos;ll be ordered by capture time from
           video metadata.
         </p>
       </div>
 
       <div className="flex justify-center">
-        <label>
+        <label className="cursor-pointer">
           <input
             type="file"
             accept="video/*"
@@ -106,7 +110,9 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
             disabled={uploading}
             onChange={(e) => void handleFiles(e.target.files)}
           />
-          <span className={buttonVariants()}>Choose videos</span>
+          <span className={buttonVariants({ className: "h-11 rounded-xl px-6" })}>
+            Choose videos
+          </span>
         </label>
       </div>
 

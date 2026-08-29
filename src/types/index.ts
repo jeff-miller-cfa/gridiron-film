@@ -20,6 +20,7 @@ export type PlayRecord = {
   offenseTeam: string | null;
   notes: string | null;
   sortOrder: number;
+  deletedAt: string | Date | null;
   createdAt: string | Date;
   updatedAt: string | Date;
 };
@@ -48,4 +49,5 @@ export type PlayDraft = {
   offenseTeam?: string | null;
   notes?: string | null;
   sortOrder: number;
+  deletedAt?: string | null;
 };

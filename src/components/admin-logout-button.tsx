@@ -13,7 +13,7 @@ export function AdminLogoutButton() {
   };
 
   return (
-    <Button variant="outline" onClick={() => void logout()}>
+    <Button variant="outline" className="rounded-xl" onClick={() => void logout()}>
       Log out
     </Button>
   );

@@ -51,6 +51,7 @@ export const plays = pgTable("plays", {
   offenseTeam: text("offense_team"),
   notes: text("notes"),
   sortOrder: integer("sort_order").notNull().default(0),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
