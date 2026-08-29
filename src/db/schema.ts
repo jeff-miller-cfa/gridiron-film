@@ -47,11 +47,8 @@ export const plays = pgTable("plays", {
     .references(() => videoClips.id, { onDelete: "cascade" }),
   startTime: real("start_time").notNull().default(0),
   endTime: real("end_time").notNull(),
-  playNumber: integer("play_number").notNull(),
   offenseTeam: text("offense_team"),
   notes: text("notes"),
-  sortOrder: integer("sort_order").notNull().default(0),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

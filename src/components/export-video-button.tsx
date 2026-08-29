@@ -37,7 +37,7 @@ export function ExportVideoButton({ plays, gameTitle }: ExportVideoButtonProps) 
         const play = plays[i];
         if (!play.videoClip) continue;
 
-        setStatus(`Processing play ${play.playNumber} (${i + 1}/${plays.length})...`);
+        setStatus(`Processing play ${i + 1} (${i + 1}/${plays.length})...`);
         const inputName = `input_${i}.mp4`;
         const outputName = `segment_${i}.mp4`;
 
@@ -55,7 +55,7 @@ export function ExportVideoButton({ plays, gameTitle }: ExportVideoButtonProps) 
           "-t",
           String(duration),
           "-vf",
-          `drawtext=text='Play ${play.playNumber}':fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8:x=(w-text_w)/2:y=h-th-20`,
+          `drawtext=text='Play ${i + 1}':fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8:x=(w-text_w)/2:y=h-th-20`,
           "-c:v",
           "libx264",
           "-preset",

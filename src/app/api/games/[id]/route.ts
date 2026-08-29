@@ -3,27 +3,13 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { games } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { getGameById } from "@/lib/games";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
   const { id } = await context.params;
-  const db = getDb();
-
-  const game = await db.query.games.findFirst({
-    where: eq(games.id, id),
-    with: {
-      videoClips: {
-        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
-      },
-      plays: {
-        orderBy: (plays, { asc }) => [asc(plays.sortOrder)],
-        with: {
-          videoClip: true,
-        },
-      },
-    },
-  });
+  const game = await getGameById(id);
 
   if (!game) {
     return NextResponse.json({ error: "Game not found" }, { status: 404 });

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { AdminLogoutButton } from "@/components/admin-logout-button";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Film, Shield } from "lucide-react";
@@ -49,15 +50,18 @@ export function SiteHeader({ variant = "default" }: SiteHeaderProps) {
             </Link>
           )}
           {variant === "admin" && isAdmin && pathname !== "/admin/login" && (
-            <Link
-              href="/"
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "sm" }),
-                "text-muted-foreground",
-              )}
-            >
-              View site
-            </Link>
+            <>
+              <Link
+                href="/"
+                className={cn(
+                  buttonVariants({ variant: "ghost", size: "sm" }),
+                  "text-muted-foreground",
+                )}
+              >
+                View site
+              </Link>
+              <AdminLogoutButton size="sm" />
+            </>
           )}
         </nav>
       </div>

@@ -3,16 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname localhost",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "recompress-clips": "dotenv -e .env.local -- npx tsx scripts/recompress-clips.ts"
+    "recompress-clips": "dotenv -e .env.local -- npx tsx scripts/recompress-clips.ts",
+    "reset-plays": "dotenv -e .env.local -- npx tsx scripts/reset-plays.ts",
+    "postinstall": "node scripts/copy-ffmpeg-core.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
+    "@ffmpeg/core": "^0.12.9",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@neondatabase/serverless": "^1.1.0",

@@ -13,6 +13,15 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname === "/admin/login") {
+    const token = request.cookies.get(AUTH_COOKIE)?.value;
+    if (token) {
+      try {
+        await jwtVerify(token, secret);
+        return NextResponse.redirect(new URL("/admin", request.url));
+      } catch {
+        // Invalid token — show login form.
+      }
+    }
     return NextResponse.next();
   }
 

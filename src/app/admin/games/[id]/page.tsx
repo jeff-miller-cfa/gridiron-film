@@ -7,13 +7,13 @@ import { PageShell } from "@/components/page-shell";
 import { VideoUploader } from "@/components/video-uploader";
 import { PlayEditor } from "@/components/play-editor";
 import { ExportVideoButton } from "@/components/export-video-button";
-import { AdminLogoutButton } from "@/components/admin-logout-button";
-import { DeleteGameButton } from "@/components/delete-game-button";
+import { GameAdminMenu } from "@/components/game-admin-menu";
 import { buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { sortPlays, orderedClipIdsFromClips } from "@/lib/plays";
 import { formatGameDate } from "@/lib/video";
-import type { GameWithRelations, PlayDraft } from "@/types";
+import type { GameWithRelations, PlayDraft, PlayGap } from "@/types";
 import { Calendar, ExternalLink, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -32,41 +32,32 @@ function parseViewMode(value: string | null): ViewMode {
 function normalizePlaysSnapshot(plays: PlayDraft[]): string {
   return JSON.stringify(
     [...plays]
-      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .sort((a, b) => {
+        if (a.videoClipId !== b.videoClipId) {
+          return a.videoClipId.localeCompare(b.videoClipId);
+        }
+        return a.startTime - b.startTime;
+      })
       .map((p) => ({
         id: p.id ?? null,
         videoClipId: p.videoClipId,
         startTime: p.startTime,
         endTime: p.endTime,
-        playNumber: p.playNumber,
         offenseTeam: p.offenseTeam ?? null,
         notes: p.notes ?? null,
-        sortOrder: p.sortOrder,
-        deletedAt: p.deletedAt ?? null,
       })),
   );
 }
 
-function mapPlaysFromApi(
-  items: Array<Omit<PlayDraft, "deletedAt"> & { deletedAt?: string | Date | null }>,
-): PlayDraft[] {
-  return [...items]
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((p) => ({
-      id: p.id,
-      videoClipId: p.videoClipId,
-      startTime: p.startTime,
-      endTime: p.endTime,
-      playNumber: p.playNumber,
-      offenseTeam: p.offenseTeam,
-      notes: p.notes,
-      sortOrder: p.sortOrder,
-      deletedAt: p.deletedAt
-        ? typeof p.deletedAt === "string"
-          ? p.deletedAt
-          : new Date(p.deletedAt as string | Date).toISOString()
-        : null,
-    }));
+function mapPlaysFromApi(items: PlayDraft[]): PlayDraft[] {
+  return items.map((p) => ({
+    id: p.id,
+    videoClipId: p.videoClipId,
+    startTime: p.startTime,
+    endTime: p.endTime,
+    offenseTeam: p.offenseTeam,
+    notes: p.notes,
+  }));
 }
 
 export default function AdminGamePage() {
@@ -93,11 +84,8 @@ export default function AdminGamePage() {
         videoClipId: p.videoClipId,
         startTime: p.startTime,
         endTime: p.endTime,
-        playNumber: p.playNumber,
         offenseTeam: p.offenseTeam,
         notes: p.notes,
-        sortOrder: p.sortOrder,
-        deletedAt: p.deletedAt,
       })),
     );
     lastSavedSnapshotRef.current = normalizePlaysSnapshot(loadedPlays);
@@ -153,8 +141,7 @@ export default function AdminGamePage() {
             (s) =>
               s.videoClipId === play.videoClipId &&
               s.startTime === play.startTime &&
-              s.endTime === play.endTime &&
-              s.sortOrder === play.sortOrder,
+              s.endTime === play.endTime,
           );
           if (match?.id) {
             changed = true;
@@ -188,21 +175,31 @@ export default function AdminGamePage() {
     };
   }, [plays, game, persistPlays]);
 
-  const recoverPlay = (playId: string) => {
-    setPlays((current) => {
-      const updated = current.map((p) =>
-        p.id === playId ? { ...p, deletedAt: null } : p,
-      );
-      let n = 0;
-      return [...updated]
-        .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((p) => {
-          if (p.deletedAt) return p;
-          n += 1;
-          return { ...p, playNumber: n };
-        });
-    });
+  const restoreGap = (gaps: PlayGap[]) => {
+    if (gaps.length === 0) return;
+
+    setPlays((current) => [
+      ...current,
+      ...gaps.map((gap) => ({
+        clientKey: crypto.randomUUID(),
+        videoClipId: gap.videoClipId,
+        startTime: gap.startTime,
+        endTime: gap.endTime,
+        offenseTeam: null,
+        notes: "",
+      })),
+    ]);
   };
+
+  const handlePlaysReset = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    isSavingRef.current = false;
+    setSaveStatus("idle");
+    void loadGame();
+  }, [loadGame]);
 
   const setActiveView = (view: ViewMode) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -220,21 +217,19 @@ export default function AdminGamePage() {
     );
   }
 
-  const activePlays = plays.filter((p) => !p.deletedAt);
-  const playsWithClips = plays
-    .filter((p) => !p.deletedAt)
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((p) => ({
+  const playsWithClips = sortPlays(
+    plays.map((p) => ({
       ...p,
       id: p.id ?? "",
       gameId: game.id,
       offenseTeam: p.offenseTeam ?? null,
       notes: p.notes ?? null,
-      deletedAt: null,
       createdAt: "",
       updatedAt: "",
       videoClip: game.videoClips?.find((c) => c.id === p.videoClipId),
-    }));
+    })),
+    orderedClipIdsFromClips(game.videoClips ?? []),
+  );
 
   return (
     <PageShell variant="admin">
@@ -277,7 +272,7 @@ export default function AdminGamePage() {
                   {game.videoClips?.length ?? 0} clips
                 </Badge>
                 <Badge className="bg-accent/10 text-accent hover:bg-accent/15">
-                  {activePlays.length} plays
+                  {plays.length} plays
                 </Badge>
               </div>
             </div>
@@ -293,13 +288,15 @@ export default function AdminGamePage() {
                 <ExternalLink className="mr-2 h-4 w-4" />
                 Preview
               </Link>
-              <DeleteGameButton
+              <GameAdminMenu
                 gameId={gameId}
                 awayTeam={game.awayTeam}
                 homeTeam={game.homeTeam}
-                className="h-9 rounded-xl px-3"
+                clipCount={game.videoClips?.length ?? 0}
+                playCount={plays.length}
+                onPlaysReset={handlePlaysReset}
+                onClipsDeleted={() => void loadGame()}
               />
-              <AdminLogoutButton />
             </div>
           </div>
         </div>
@@ -333,7 +330,7 @@ export default function AdminGamePage() {
               homeTeam={game.homeTeam}
               awayTeam={game.awayTeam}
               onChange={setPlays}
-              onRecoverPlay={recoverPlay}
+              onRestoreGap={restoreGap}
             />
           </TabsContent>
 

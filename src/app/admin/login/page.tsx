@@ -1,55 +1,21 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useActionState } from "react";
 import { PageShell } from "@/components/page-shell";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { loginAction, type LoginState } from "@/app/admin/login/actions";
 import { Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const inputClassName =
   "h-11 w-full min-w-0 rounded-xl border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
 
+const initialState: LoginState = {};
+
 export default function AdminLoginPage() {
-  const formRef = useRef<HTMLFormElement>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async () => {
-    const form = formRef.current;
-    if (!form) return;
-
-    const data = new FormData(form);
-    const trimmedUsername = String(data.get("username") ?? "").trim();
-    const trimmedPassword = String(data.get("password") ?? "").trim();
-
-    setLoading(true);
-    setError("");
-
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          username: trimmedUsername,
-          password: trimmedPassword,
-        }),
-      });
-
-      if (res.ok) {
-        window.location.assign("/admin");
-        return;
-      }
-
-      setError("Invalid username or password");
-    } catch {
-      setError("Could not reach the server. Is the dev server running?");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [state, formAction, pending] = useActionState(loginAction, initialState);
 
   return (
     <PageShell variant="admin">
@@ -66,14 +32,7 @@ export default function AdminLoginPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form
-              ref={formRef}
-              className="space-y-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void handleSubmit();
-              }}
-            >
+            <form action={formAction} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
                 <input
@@ -95,18 +54,20 @@ export default function AdminLoginPage() {
                   required
                 />
               </div>
-              {error && (
+              {state.error && (
                 <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  {error}
+                  {state.error}
                 </p>
               )}
-              <Button
+              <button
                 type="submit"
-                className={cn("h-11 w-full rounded-xl")}
-                disabled={loading}
+                className={cn(
+                  buttonVariants({ className: "h-11 w-full rounded-xl" }),
+                )}
+                disabled={pending}
               >
-                {loading ? "Signing in..." : "Sign in"}
-              </Button>
+                {pending ? "Signing in..." : "Sign in"}
+              </button>
             </form>
           </CardContent>
         </Card>

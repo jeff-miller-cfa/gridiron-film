@@ -31,6 +31,7 @@ export async function compressVideoForWeb(
   file: File,
   options?: {
     ffmpeg?: FFmpeg;
+    jobId?: string;
     onProgress?: (ratio: number) => void;
     force?: boolean;
   },
@@ -47,8 +48,9 @@ export async function compressVideoForWeb(
   const inputExt = file.name.includes(".")
     ? file.name.split(".").pop()!.toLowerCase()
     : "mov";
-  const inputName = `upload-input.${inputExt}`;
-  const outputName = "upload-output.mp4";
+  const jobId = options?.jobId ?? crypto.randomUUID();
+  const inputName = `upload-input-${jobId}.${inputExt}`;
+  const outputName = `upload-output-${jobId}.mp4`;
 
   try {
     await ffmpeg.writeFile(inputName, await fetchFile(file));

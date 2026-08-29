@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { plays } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { sortPlays } from "@/lib/plays";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -11,22 +12,32 @@ type PlayUpdate = {
   videoClipId: string;
   startTime: number;
   endTime: number;
-  playNumber: number;
   offenseTeam?: string | null;
   notes?: string | null;
-  sortOrder: number;
-  deletedAt?: string | null;
 };
 
 export async function GET(_request: Request, context: RouteContext) {
   const { id: gameId } = await context.params;
   const db = getDb();
 
-  const gamePlays = await db.query.plays.findMany({
-    where: eq(plays.gameId, gameId),
-    orderBy: (plays, { asc }) => [asc(plays.sortOrder)],
-    with: { videoClip: true },
+  const game = await db.query.games.findFirst({
+    where: (games, { eq: equals }) => equals(games.id, gameId),
+    with: {
+      videoClips: {
+        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
+      },
+      plays: {
+        with: { videoClip: true },
+      },
+    },
   });
+
+  if (!game) {
+    return NextResponse.json({ error: "Game not found" }, { status: 404 });
+  }
+
+  const orderedClipIds = game.videoClips.map((clip) => clip.id);
+  const gamePlays = sortPlays(game.plays, orderedClipIds);
 
   return NextResponse.json(gamePlays);
 }
@@ -50,6 +61,17 @@ export async function PUT(request: Request, context: RouteContext) {
   });
   const existingById = new Map(existing.map((p) => [p.id, p]));
 
+  const submittedIds = new Set(
+    playUpdates.map((p) => p.id).filter((id): id is string => Boolean(id)),
+  );
+  const idsToDelete = existing
+    .map((p) => p.id)
+    .filter((id) => !submittedIds.has(id));
+
+  if (idsToDelete.length > 0) {
+    await db.delete(plays).where(inArray(plays.id, idsToDelete));
+  }
+
   const results = [];
 
   for (const p of playUpdates) {
@@ -57,11 +79,8 @@ export async function PUT(request: Request, context: RouteContext) {
       videoClipId: p.videoClipId,
       startTime: p.startTime,
       endTime: p.endTime,
-      playNumber: p.playNumber,
       offenseTeam: p.offenseTeam ?? null,
       notes: p.notes ?? null,
-      sortOrder: p.sortOrder,
-      deletedAt: p.deletedAt ? new Date(p.deletedAt) : null,
       updatedAt: new Date(),
     };
 
@@ -81,5 +100,15 @@ export async function PUT(request: Request, context: RouteContext) {
     }
   }
 
-  return NextResponse.json(results);
+  const game = await db.query.games.findFirst({
+    where: (games, { eq: equals }) => equals(games.id, gameId),
+    with: {
+      videoClips: {
+        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
+      },
+    },
+  });
+  const orderedClipIds = game?.videoClips.map((clip) => clip.id) ?? [];
+
+  return NextResponse.json(sortPlays(results, orderedClipIds));
 }

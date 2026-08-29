@@ -51,7 +51,7 @@ export default async function HomePage() {
                 awayTeam={game.awayTeam}
                 stadium={game.stadium}
                 gameDateTime={game.gameDateTime}
-                playCount={game.plays?.filter((p) => !p.deletedAt).length ?? 0}
+                playCount={game.plays?.length ?? 0}
               />
             ))}
           </div>

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { plays, videoClips } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { deleteAllGameClips } from "@/lib/delete-game-clips";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -51,18 +52,11 @@ export async function POST(request: Request, context: RouteContext) {
     )
     .returning();
 
-  const existingPlays = await db.query.plays.findMany({
-    where: eq(plays.gameId, gameId),
-  });
-  let playNumber = existingPlays.length;
-
-  const newPlays = insertedClips.map((clip, index) => ({
+  const newPlays = insertedClips.map((clip) => ({
     gameId,
     videoClipId: clip.id,
     startTime: 0,
     endTime: clip.duration,
-    playNumber: playNumber + index + 1,
-    sortOrder: playNumber + index,
   }));
 
   const insertedPlays = await db.insert(plays).values(newPlays).returning();
@@ -80,4 +74,21 @@ export async function GET(_request: Request, context: RouteContext) {
   });
 
   return NextResponse.json(clips);
+}
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  if (!(await isAdminAuthenticated())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id: gameId } = await context.params;
+  const result = await deleteAllGameClips(gameId);
+
+  if (!result) {
+    return NextResponse.json({ error: "Game not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({
+    deletedCount: result.deletedCount,
+  });
 }

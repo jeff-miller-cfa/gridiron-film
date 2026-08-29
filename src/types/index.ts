@@ -16,11 +16,8 @@ export type PlayRecord = {
   videoClipId: string;
   startTime: number;
   endTime: number;
-  playNumber: number;
   offenseTeam: string | null;
   notes: string | null;
-  sortOrder: number;
-  deletedAt: string | Date | null;
   createdAt: string | Date;
   updatedAt: string | Date;
 };
@@ -38,16 +35,21 @@ export type VideoClipRecord = {
 
 export type PlayWithClip = PlayRecord & {
   videoClip?: VideoClipRecord;
+  clientKey?: string;
 };
 
 export type PlayDraft = {
   id?: string;
+  clientKey?: string;
   videoClipId: string;
   startTime: number;
   endTime: number;
-  playNumber: number;
   offenseTeam?: string | null;
   notes?: string | null;
-  sortOrder: number;
-  deletedAt?: string | null;
+};
+
+export type PlayGap = {
+  videoClipId: string;
+  startTime: number;
+  endTime: number;
 };

@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDuration } from "@/lib/video";
 import {
@@ -13,16 +13,24 @@ import {
   findActiveSegmentAtClipTime,
   fullPositionToPlaybackTime,
   fullPositionToSegment,
+  gapToPlayGaps,
+  isGapSegment,
+  isPlaySegment,
   localClipTimeToPlaybackTime,
   playbackToFullPosition,
-  playIndexToPlaybackTime,
   playbackTimeToClipTime,
   resolveClipIdFromVideo,
   segmentLocalTime,
 } from "@/lib/player-timeline";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
-import type { PlayDraft, PlayWithClip, VideoClipRecord } from "@/types";
-import { Pause, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
+import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
+import { playIdentityKey, sortPlays } from "@/lib/plays";
+import {
+  offenseTimelineTone,
+  playTimelineSegmentClass,
+} from "@/lib/play-timeline-colors";
+import type { PlayDraft, PlayGap, PlayWithClip, VideoClipRecord } from "@/types";
+import { Eye, EyeOff, Pause, Pencil, Play, RotateCcw, Scissors, StickyNote, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type PlayEditorProps = {
@@ -32,8 +40,12 @@ type PlayEditorProps = {
   awayTeam: string;
   gameId: string;
   onChange: (plays: PlayDraft[]) => void;
-  onRecoverPlay: (playId: string) => void;
+  onRestoreGap: (gaps: PlayGap[]) => void;
 };
+
+function parseShowGaps(value: string | null): boolean {
+  return value === "true" || value === "1";
+}
 
 export function PlayEditor({
   clips,
@@ -42,56 +54,94 @@ export function PlayEditor({
   awayTeam,
   gameId,
   onChange,
-  onRecoverPlay,
+  onRestoreGap,
 }: PlayEditorProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const showGapsOnTimeline = parseShowGaps(searchParams.get("gaps"));
+
+  const setShowGapsOnTimeline = useCallback(
+    (show: boolean) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (show) {
+        next.set("gaps", "true");
+      } else {
+        next.delete("gaps");
+      }
+      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const playListRef = useRef<HTMLDivElement>(null);
+  const playItemRefs = useRef(new Map<string, HTMLDivElement>());
   const seekingRef = useRef(false);
-  const currentIndexRef = useRef(0);
+  const currentPlayIdRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
   const loadedClipIdRef = useRef<string | null>(null);
+  const wasPlayingRef = useRef(false);
+  const isPlayingRef = useRef(false);
+  const seekTokenRef = useRef(0);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
 
   const [playbackTime, setPlaybackTime] = useState(0);
   const [clipLocalTime, setClipLocalTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [selectedPlayIndex, setSelectedPlayIndex] = useState<number | null>(
-    null,
+  isPlayingRef.current = isPlaying;
+  const [selectedPlayId, setSelectedPlayId] = useState<string | null>(null);
+  const [notesEditorPlayId, setNotesEditorPlayId] = useState<string | null>(null);
+
+  const orderedClipIds = useMemo(
+    () =>
+      [...clips]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((clip) => clip.id),
+    [clips],
   );
-  const [loadedClipUrl, setLoadedClipUrl] = useState<string | null>(null);
 
   const playsWithClips: PlayWithClip[] = useMemo(
     () =>
-      plays.map((p, playIndex) => ({
+      plays.map((p) => ({
         ...p,
-        id: p.id ?? "",
+        id: p.id ?? `pending-${playIdentityKey(p)}`,
         gameId,
         offenseTeam: p.offenseTeam ?? null,
         notes: p.notes ?? null,
-        deletedAt: p.deletedAt ?? null,
         createdAt: "",
         updatedAt: "",
         videoClip: clips.find((c) => c.id === p.videoClipId),
-        playIndex,
       })),
     [plays, clips, gameId],
   );
 
-  const { segments, fullDuration, playbackDuration, activeSegments } = useMemo(
-    () => buildTimelines(playsWithClips),
-    [playsWithClips],
+  const {
+    segments,
+    playSegments,
+    gapSegments,
+    fullDuration,
+    playbackDuration,
+  } = useMemo(
+    () => buildTimelines(clips, playsWithClips),
+    [clips, playsWithClips],
   );
 
-  const fullPosition = playbackToFullPosition(playbackTime, segments);
+  const sortedPlays = useMemo(
+    () => sortPlays(plays, orderedClipIds),
+    [plays, orderedClipIds],
+  );
+
+  const fullPosition = playbackToFullPosition(playbackTime, playSegments);
+  const timelineDuration = showGapsOnTimeline ? fullDuration : playbackDuration;
+  const timelinePosition = showGapsOnTimeline ? fullPosition : playbackTime;
 
   const seekToPlaybackTime = useCallback(
     (time: number, autoplay = false): Promise<void> => {
       const video = videoRef.current;
-      const segment = activeSegments.find(
-        (s) =>
-          s.playbackStart !== null &&
-          time >= s.playbackStart &&
-          time < s.playbackEnd!,
+      const segment = playSegments.find(
+        (s) => time >= s.playbackStart && time < s.playbackEnd,
       );
       if (!video || !segment?.play.videoClip) return Promise.resolve();
 
@@ -102,24 +152,44 @@ export function PlayEditor({
       const localTime = segmentLocalTime(clamped, segment);
       const clipUrl = segment.play.videoClip.blobUrl;
       const clipId = segment.play.videoClipId;
+      const previousClipId = loadedClipIdRef.current;
+      const seekToken = ++seekTokenRef.current;
 
       seekingRef.current = true;
       setPlaybackTime(clamped);
       setClipLocalTime(localTime);
-      setSelectedPlayIndex(segment.playIndex);
-      currentIndexRef.current = segment.playIndex;
+      const playId = playIdentityKey(segment.play);
+      setSelectedPlayId(playId);
+      currentPlayIdRef.current = playId;
       loadedClipIdRef.current = clipId;
-      setLoadedClipUrl(clipUrl);
 
-      const clipTime = playbackTimeToClipTime(clamped, segments);
+      const clipTime = playbackTimeToClipTime(clamped, playSegments);
       if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
 
       return new Promise((resolve) => {
-        const finish = () => {
-          seekingRef.current = false;
-          if (autoplay) {
-            void video.play().then(() => setIsPlaying(true));
+        let seekApplied = false;
+
+        const resumePlayback = () => {
+          if (!autoplay) return;
+
+          const playVideo = () => {
+            void video
+              .play()
+              .then(() => setIsPlaying(true))
+              .catch(() => setIsPlaying(false));
+          };
+
+          if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+            playVideo();
+          } else {
+            video.addEventListener("canplay", playVideo, { once: true });
           }
+        };
+
+        const finish = () => {
+          if (seekToken !== seekTokenRef.current) return;
+          seekingRef.current = false;
+          resumePlayback();
           resolve();
         };
 
@@ -128,37 +198,36 @@ export function PlayEditor({
           finish();
         };
 
-        if (loadedClipUrl !== clipUrl) {
+        const applySeek = () => {
+          if (seekToken !== seekTokenRef.current || seekApplied) return;
+          seekApplied = true;
+
+          if (Math.abs(video.currentTime - localTime) < 0.05) {
+            finish();
+            return;
+          }
+          video.addEventListener("seeked", onSeeked);
+          video.currentTime = localTime;
+        };
+
+        const onMetadata = () => {
+          video.removeEventListener("loadedmetadata", onMetadata);
+          applySeek();
+        };
+
+        if (previousClipId !== clipId) {
+          video.addEventListener("loadedmetadata", onMetadata);
           video.src = clipUrl;
           video.load();
-          video.addEventListener(
-            "loadedmetadata",
-            () => {
-              video.currentTime = localTime;
-            },
-            { once: true },
-          );
-          video.addEventListener("seeked", onSeeked);
+          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            onMetadata();
+          }
         } else {
-          video.currentTime = localTime;
-          video.addEventListener("seeked", onSeeked);
+          applySeek();
         }
-
-        setTimeout(() => {
-          if (seekingRef.current) finish();
-        }, 2000);
       });
     },
-    [activeSegments, playbackDuration, loadedClipUrl, segments, persistPlayhead],
-  );
-
-  const seekToPlay = useCallback(
-    (playIndex: number) => {
-      const playback = playIndexToPlaybackTime(playIndex, segments);
-      if (playback === null) return;
-      void seekToPlaybackTime(playback);
-    },
-    [segments, seekToPlaybackTime],
+    [playSegments, playbackDuration, persistPlayhead],
   );
 
   const seekToFullPosition = useCallback(
@@ -166,19 +235,61 @@ export function PlayEditor({
       const segment = fullPositionToSegment(position, segments);
       if (!segment) return;
 
-      if (segment.deleted && segment.play.id) {
-        onRecoverPlay(segment.play.id);
+      if (isGapSegment(segment)) {
+        onRestoreGap(gapToPlayGaps(segment));
         return;
       }
 
-      const playback = fullPositionToPlaybackTime(position, segments);
-      if (playback !== null) void seekToPlaybackTime(playback);
+      const playback = fullPositionToPlaybackTime(
+        position,
+        segments,
+        playSegments,
+      );
+      if (playback !== null) {
+        void seekToPlaybackTime(playback);
+      }
     },
-    [segments, onRecoverPlay, seekToPlaybackTime],
+    [segments, playSegments, onRestoreGap, seekToPlaybackTime],
   );
 
+  const seekToPlay = useCallback(
+    (playId: string) => {
+      const segment = playSegments.find(
+        (s) => playIdentityKey(s.play) === playId,
+      );
+      if (!segment) return;
+      void seekToPlaybackTime(segment.playbackStart);
+    },
+    [playSegments, seekToPlaybackTime],
+  );
+
+  const { playheadPercent, onTimelinePointerDown, onPlayheadPointerDown } =
+    useTimelineScrub({
+      timelineRef,
+      fullDuration: timelineDuration,
+      fullPosition: timelinePosition,
+      onSeek: (position) => {
+        if (showGapsOnTimeline) {
+          seekToFullPosition(position);
+        } else {
+          void seekToPlaybackTime(position);
+        }
+      },
+      onScrubStart: () => {
+        const video = videoRef.current;
+        wasPlayingRef.current = Boolean(video && !video.paused);
+        video?.pause();
+        setIsPlaying(false);
+      },
+      onScrubEnd: () => {
+        if (wasPlayingRef.current) {
+          void videoRef.current?.play().then(() => setIsPlaying(true));
+        }
+      },
+    });
+
   useEffect(() => {
-    if (activeSegments.length === 0 || initializedRef.current) return;
+    if (playSegments.length === 0 || initializedRef.current) return;
     initializedRef.current = true;
 
     let targetPlayback = 0;
@@ -186,20 +297,23 @@ export function PlayEditor({
       const restored = clipTimeToPlaybackTime(
         persisted.clipId,
         persisted.time,
-        segments,
+        playSegments,
       );
       if (restored !== null) targetPlayback = restored;
     }
 
     void seekToPlaybackTime(targetPlayback);
-  }, [activeSegments.length, persisted, segments, seekToPlaybackTime]);
+    // Only restore URL playhead on first load — not when segments/persisted update later.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playSegments.length, seekToPlaybackTime]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || activeSegments.length === 0) return;
+    if (!video || playSegments.length === 0) return;
 
     const syncFromVideo = () => {
       if (seekingRef.current) return;
+      if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
       const local = video.currentTime;
       const clipId =
@@ -208,37 +322,34 @@ export function PlayEditor({
 
       loadedClipIdRef.current = clipId;
 
-      let segment = findActiveSegmentAtClipTime(
-        clipId,
-        local,
-        activeSegments,
-      );
+      let segment = findActiveSegmentAtClipTime(clipId, local, playSegments);
 
       if (!segment) {
         const playback = localClipTimeToPlaybackTime(
           clipId,
           local,
-          activeSegments,
+          playSegments,
         );
         if (playback === null) return;
         segment =
-          activeSegments.find(
-            (s) =>
-              s.playbackStart !== null &&
-              playback >= s.playbackStart &&
-              playback < s.playbackEnd!,
+          playSegments.find(
+            (s) => playback >= s.playbackStart && playback < s.playbackEnd,
           ) ?? null;
       }
 
-      if (!segment || segment.playbackStart === null) return;
+      if (!segment) return;
 
       if (local >= segment.play.endTime - 0.08) {
-        const segIdx = activeSegments.indexOf(segment);
-        const next = activeSegments[segIdx + 1];
+        const segIdx = playSegments.indexOf(segment);
+        const next = playSegments[segIdx + 1];
         if (next) {
-          void seekToPlaybackTime(next.playbackStart!, !video.paused);
+          void seekToPlaybackTime(next.playbackStart, isPlayingRef.current);
           return;
         }
+        video.pause();
+        setIsPlaying(false);
+        setPlaybackTime(segment.playbackEnd);
+        return;
       }
 
       const newPlayback =
@@ -246,9 +357,11 @@ export function PlayEditor({
       setPlaybackTime(newPlayback);
       setClipLocalTime(local);
       persistPlayhead(clipId, local);
-      if (segment.playIndex !== currentIndexRef.current) {
-        currentIndexRef.current = segment.playIndex;
-        setSelectedPlayIndex(segment.playIndex);
+
+      const playId = playIdentityKey(segment.play);
+      if (playId !== currentPlayIdRef.current) {
+        currentPlayIdRef.current = playId;
+        setSelectedPlayId(playId);
       }
     };
 
@@ -261,21 +374,16 @@ export function PlayEditor({
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("seeked", onSeeked);
     };
-  }, [activeSegments, clips, persistPlayhead, seekToPlaybackTime]);
+  }, [playSegments, clips, persistPlayhead, seekToPlaybackTime]);
 
-  const renumberActivePlays = (updated: PlayDraft[]) => {
-    let n = 0;
-    return [...updated]
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map((p) => {
-        if (p.deletedAt) return p;
-        n += 1;
-        return { ...p, playNumber: n };
-      });
-  };
+  useEffect(() => {
+    if (!selectedPlayId) return;
+    const item = playItemRefs.current.get(selectedPlayId);
+    item?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedPlayId]);
 
   const updatePlays = (updated: PlayDraft[]) => {
-    onChange(renumberActivePlays(updated));
+    onChange(updated);
   };
 
   const splitAtCurrentTime = () => {
@@ -286,7 +394,6 @@ export function PlayEditor({
     const time = video.currentTime;
     const playIndex = plays.findIndex(
       (p) =>
-        !p.deletedAt &&
         p.videoClipId === clipId &&
         time > p.startTime + 0.1 &&
         time < p.endTime - 0.1,
@@ -296,14 +403,12 @@ export function PlayEditor({
 
     const play = plays[playIndex];
     const newPlay: PlayDraft = {
+      clientKey: crypto.randomUUID(),
       videoClipId: play.videoClipId,
       startTime: time,
       endTime: play.endTime,
-      playNumber: play.playNumber + 1,
       offenseTeam: play.offenseTeam,
       notes: "",
-      sortOrder: play.sortOrder + 0.5,
-      deletedAt: null,
     };
 
     const updated = plays.map((p, i) =>
@@ -313,28 +418,26 @@ export function PlayEditor({
     updatePlays(updated);
   };
 
-  const removePlay = (index: number) => {
-    const updated = plays.map((p, i) =>
-      i === index ? { ...p, deletedAt: new Date().toISOString() } : p,
-    );
+  const removePlay = (play: PlayDraft) => {
+    const targetKey = playIdentityKey(play);
+    const updated = plays.filter((p) => playIdentityKey(p) !== targetKey);
     updatePlays(updated);
-    setSelectedPlayIndex(null);
+    setSelectedPlayId(null);
   };
 
   const updatePlayField = (
-    index: number,
+    play: PlayDraft,
     field: keyof PlayDraft,
     value: string | number,
   ) => {
     onChange(
-      plays.map((p, i) => (i === index ? { ...p, [field]: value } : p)),
+      plays.map((p) =>
+        playIdentityKey(p) === playIdentityKey(play)
+          ? { ...p, [field]: value }
+          : p,
+      ),
     );
   };
-
-  const allPlaysActive = plays
-    .map((p, index) => ({ ...p, index }))
-    .filter((p) => !p.deletedAt)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
 
   if (!clips.length) {
     return (
@@ -346,23 +449,19 @@ export function PlayEditor({
     );
   }
 
-  if (activeSegments.length === 0) {
+  if (playSegments.length === 0) {
     return (
       <Card className="surface-card border-dashed">
         <CardContent className="py-12 text-center text-muted-foreground">
-          No active plays. Restore a removed play from the timeline or upload
-          footage.
+          No plays yet. Restore a gap from the timeline or upload footage.
         </CardContent>
       </Card>
     );
   }
 
-  const playheadPercent =
-    fullDuration > 0 ? (fullPosition / fullDuration) * 100 : 0;
-
   const currentSegment =
-    activeSegments.find((s) => s.playIndex === selectedPlayIndex) ??
-    activeSegments[0];
+    playSegments.find((s) => playIdentityKey(s.play) === selectedPlayId) ??
+    playSegments[0];
   const currentClip = currentSegment?.play.videoClip;
 
   const togglePlay = async () => {
@@ -376,6 +475,8 @@ export function PlayEditor({
       setIsPlaying(false);
     }
   };
+
+  const timelineSegments = showGapsOnTimeline ? segments : playSegments;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
@@ -393,7 +494,7 @@ export function PlayEditor({
             <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3">
               <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm">
                 <span className="font-medium">
-                  Play {currentSegment?.play.playNumber ?? 1}
+                  Play {currentSegment?.playNumber ?? 1}
                   {currentClip ? ` · ${currentClip.filename}` : ""}
                 </span>
                 <span className="tabular-nums">
@@ -435,66 +536,99 @@ export function PlayEditor({
         </div>
 
         <div className="surface-card space-y-2 p-4">
-          <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+          <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
             <span>{formatDuration(playbackTime)}</span>
-            <span>{formatDuration(playbackDuration)} total</span>
+            <div className="flex items-center gap-2">
+              {gapSegments.length > 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-lg px-2 text-xs"
+                  onClick={() => setShowGapsOnTimeline(!showGapsOnTimeline)}
+                >
+                  {showGapsOnTimeline ? (
+                    <EyeOff className="mr-1.5 h-3.5 w-3.5" />
+                  ) : (
+                    <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  {showGapsOnTimeline ? "Hide gaps" : "Show gaps"}
+                </Button>
+              )}
+              <span>
+                {formatDuration(
+                  showGapsOnTimeline ? fullDuration : playbackDuration,
+                )}{" "}
+                total
+              </span>
+            </div>
           </div>
           <div
             ref={timelineRef}
             role="slider"
             aria-label="Stitched game timeline"
             tabIndex={0}
-            className="relative h-12 cursor-pointer overflow-hidden rounded-xl border border-border/80 bg-muted/40"
-            onClick={(e) => {
-              const el = timelineRef.current;
-              if (!el || fullDuration <= 0) return;
-              const rect = el.getBoundingClientRect();
-              const ratio = Math.max(
-                0,
-                Math.min(1, (e.clientX - rect.left) / rect.width),
-              );
-              seekToFullPosition(ratio * fullDuration);
-            }}
+            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            onPointerDown={onTimelinePointerDown}
           >
-            {segments.map((segment) => {
-              const left = (segment.globalStart / fullDuration) * 100;
-              const width = (segment.duration / fullDuration) * 100;
-              const isSelected = segment.playIndex === selectedPlayIndex;
+            {timelineSegments.map((segment) => {
+              const useFullLayout = showGapsOnTimeline;
+              const durationBase = useFullLayout
+                ? fullDuration
+                : playbackDuration;
+              const segmentStart = useFullLayout
+                ? segment.globalStart
+                : isPlaySegment(segment)
+                  ? segment.playbackStart
+                  : 0;
+              const left =
+                durationBase > 0 ? (segmentStart / durationBase) * 100 : 0;
+              const width =
+                durationBase > 0 ? (segment.duration / durationBase) * 100 : 0;
+
+              if (isGapSegment(segment)) {
+                return (
+                  <button
+                    key={`gap-${segment.globalStart}-${segment.globalEnd}`}
+                    type="button"
+                    title="Restore deleted play"
+                    className="absolute top-0 flex h-full items-center justify-center border-r border-white/40 bg-muted-foreground/30 text-muted-foreground transition-colors hover:bg-accent/40"
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRestoreGap(gapToPlayGaps(segment));
+                    }}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
+                );
+              }
+
+              const playId = playIdentityKey(segment.play);
+              const isSelected = playId === selectedPlayId;
+              const offenseTone = offenseTimelineTone(
+                segment.play.offenseTeam,
+                homeTeam,
+                awayTeam,
+              );
 
               return (
                 <button
-                  key={segment.play.id || `${segment.playIndex}-${segment.globalStart}`}
+                  key={playIdentityKey(segment.play)}
                   type="button"
                   title={
-                    segment.deleted
-                      ? `Restore play ${segment.play.playNumber}`
-                      : `Play ${segment.play.playNumber}`
+                    segment.play.offenseTeam
+                      ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
+                      : `Play ${segment.playNumber}`
                   }
-                  className={cn(
-                    "absolute top-0 flex h-full items-center justify-center border-r border-white/40 text-[10px] font-bold transition-colors sm:text-xs",
-                    segment.deleted
-                      ? "bg-muted-foreground/30 text-muted-foreground hover:bg-accent/40"
-                      : isSelected
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-primary/50 text-white hover:bg-primary/70",
-                  )}
+                  className={playTimelineSegmentClass(offenseTone, isSelected)}
                   style={{ left: `${left}%`, width: `${width}%` }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (segment.deleted && segment.play.id) {
-                      onRecoverPlay(segment.play.id);
-                    } else {
-                      seekToPlay(segment.playIndex);
-                    }
+                    seekToPlay(playId);
                   }}
                 >
-                  {segment.deleted ? (
-                    <RotateCcw className="h-3 w-3" />
-                  ) : width > 4 ? (
-                    segment.play.playNumber
-                  ) : (
-                    ""
-                  )}
+                  {width > 4 ? segment.playNumber : ""}
                 </button>
               );
             })}
@@ -503,103 +637,150 @@ export function PlayEditor({
               style={{ left: `${playheadPercent}%` }}
             />
             <div
-              className="pointer-events-none absolute top-1/2 z-10 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-card bg-accent shadow-md"
-              style={{ left: `${playheadPercent}%` }}
+              role="presentation"
+              className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
+              style={{ left: `${playheadPercent}%`, touchAction: "none" }}
+              onPointerDown={onPlayheadPointerDown}
             />
           </div>
           <p className="text-center text-xs text-muted-foreground">
-            All clips stitched — click a play to jump, gray segments can be
-            restored
+            Drag the timeline or playhead to scrub — click a play to jump
+            {showGapsOnTimeline && gapSegments.length > 0
+              ? ", gray segments can be restored"
+              : ""}
           </p>
         </div>
       </div>
 
       <Card className="surface-card">
-        <CardHeader className="border-b border-border/60">
-          <CardTitle className="font-heading text-base">All plays</CardTitle>
+        <CardHeader className="border-b border-border/60 py-3">
+          <CardTitle className="font-heading text-sm">All plays</CardTitle>
         </CardHeader>
-        <CardContent className="max-h-[calc(100vh-12rem)] space-y-3 overflow-y-auto pt-4">
-          {allPlaysActive.length === 0 && (
-            <p className="text-sm text-muted-foreground">No active plays.</p>
+        <CardContent
+          ref={playListRef}
+          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3"
+        >
+          {sortedPlays.length === 0 && (
+            <p className="text-sm text-muted-foreground">No plays yet.</p>
           )}
-          {allPlaysActive.map((play) => {
-            const segment = segments.find((s) => s.playIndex === play.index);
+          {sortedPlays.map((play) => {
+            const playId = playIdentityKey(play);
+            const playNumber = playSegments.find(
+              (s) => playIdentityKey(s.play) === playId,
+            )?.playNumber;
+            const segment = playSegments.find(
+              (s) => playIdentityKey(s.play) === playId,
+            );
+            const duration = segment
+              ? segment.duration
+              : play.endTime - play.startTime;
+            const hasNotes = Boolean(play.notes?.trim());
+            const notesOpen = notesEditorPlayId === playId;
+
             return (
               <div
-                key={`${play.videoClipId}-${play.startTime}-${play.index}`}
+                key={playId}
+                ref={(node) => {
+                  if (node) playItemRefs.current.set(playId, node);
+                  else playItemRefs.current.delete(playId);
+                }}
                 className={cn(
-                  "cursor-pointer rounded-xl border p-4 transition-colors",
-                  selectedPlayIndex === play.index
+                  "cursor-pointer rounded-lg border px-2.5 py-2 transition-colors",
+                  selectedPlayId === playId
                     ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
                     : "border-border/80 bg-card hover:border-primary/20 hover:bg-muted/30",
                 )}
-                onClick={() => seekToPlay(play.index)}
+                onClick={() => seekToPlay(playId)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    seekToPlay(play.index);
+                    seekToPlay(playId);
                   }
                 }}
                 role="button"
                 tabIndex={0}
               >
-                <div className="mb-2 flex items-center justify-between">
-                  <Badge className="bg-primary/10 text-primary hover:bg-primary/15">
-                    Play {play.playNumber}
-                  </Badge>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removePlay(play.index);
-                    }}
-                    title="Remove play (recoverable from timeline)"
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-xs font-semibold text-primary">
+                    {playNumber ?? "—"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground tabular-nums">
+                    {formatDuration(duration)}
+                  </span>
+                  <div
+                    className="flex shrink-0 items-center gap-1"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                <p className="mb-2 text-xs text-muted-foreground">
-                  {segment
-                    ? formatDuration(segment.duration)
-                    : formatDuration(play.endTime - play.startTime)}
-                </p>
-                <div
-                  className="space-y-2"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div>
-                    <Label className="text-xs">Offense</Label>
-                    <div className="mt-1 flex gap-1">
-                      {[homeTeam, awayTeam].map((team) => (
-                        <Button
-                          key={team}
-                          type="button"
-                          size="sm"
-                          variant={
-                            play.offenseTeam === team ? "default" : "outline"
-                          }
-                          onClick={() =>
-                            updatePlayField(play.index, "offenseTeam", team)
-                          }
-                        >
-                          {team}
-                        </Button>
-                      ))}
-                    </div>
+                    {[homeTeam, awayTeam].map((team) => (
+                      <Button
+                        key={team}
+                        type="button"
+                        size="xs"
+                        variant={
+                          play.offenseTeam === team ? "default" : "outline"
+                        }
+                        className="max-w-[5.5rem] truncate px-1.5"
+                        title={team}
+                        onClick={() =>
+                          updatePlayField(play, "offenseTeam", team)
+                        }
+                      >
+                        {team}
+                      </Button>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground"
+                      title={hasNotes ? "Edit note" : "Add note"}
+                      onClick={() =>
+                        setNotesEditorPlayId((current) =>
+                          current === playId ? null : playId,
+                        )
+                      }
+                    >
+                      {hasNotes ? (
+                        <Pencil className="h-3 w-3" />
+                      ) : (
+                        <StickyNote className="h-3 w-3" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => removePlay(play)}
+                      title="Remove play"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
                   </div>
-                  <div>
-                    <Label className="text-xs">Notes</Label>
+                </div>
+                {hasNotes && !notesOpen && (
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {play.notes}
+                  </p>
+                )}
+                {notesOpen && (
+                  <div
+                    className="mt-2 space-y-1.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Label className="text-[11px] text-muted-foreground">
+                      Note
+                    </Label>
                     <Textarea
-                      className="mt-1 min-h-[72px] rounded-xl text-sm"
+                      autoFocus
+                      className="min-h-[56px] rounded-lg text-xs"
+                      placeholder="Add a note for this play…"
                       value={play.notes ?? ""}
                       onChange={(e) =>
-                        updatePlayField(play.index, "notes", e.target.value)
+                        updatePlayField(play, "notes", e.target.value)
                       }
                     />
                   </div>
-                </div>
+                )}
               </div>
             );
           })}

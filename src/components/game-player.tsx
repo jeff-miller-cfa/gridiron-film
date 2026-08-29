@@ -17,7 +17,8 @@ import {
   clipTimeToPlaybackTime,
   findActiveSegmentAtClipTime,
   fullPositionToPlaybackTime,
-  fullPositionToSegment,
+  isGapSegment,
+  isPlaySegment,
   localClipTimeToPlaybackTime,
   playbackToFullPosition,
   playIndexToPlaybackTime,
@@ -26,24 +27,41 @@ import {
   segmentLocalTime,
 } from "@/lib/player-timeline";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
-import type { PlayWithClip } from "@/types";
-import { List, Pause, Play, RotateCcw, SkipBack, SkipForward } from "lucide-react";
+import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
+import {
+  offenseTimelineTone,
+  playTimelineSegmentClass,
+} from "@/lib/play-timeline-colors";
+import type { PlayWithClip, VideoClipRecord } from "@/types";
+import { List, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type GamePlayerProps = {
   plays: PlayWithClip[];
   homeTeam: string;
   awayTeam: string;
-  allowRecover?: boolean;
-  onRecoverPlay?: (playId: string) => void;
+  clips?: VideoClipRecord[];
 };
+
+function deriveClipsFromPlays(plays: PlayWithClip[]): VideoClipRecord[] {
+  const seen = new Set<string>();
+  const clips: VideoClipRecord[] = [];
+
+  for (const play of plays) {
+    if (play.videoClip && !seen.has(play.videoClip.id)) {
+      seen.add(play.videoClip.id);
+      clips.push(play.videoClip);
+    }
+  }
+
+  return clips.sort((a, b) => a.sortOrder - b.sortOrder);
+}
 
 export function GamePlayer({
   plays,
   homeTeam,
   awayTeam,
-  allowRecover = false,
-  onRecoverPlay,
+  clips: clipsProp,
 }: GamePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -52,31 +70,32 @@ export function GamePlayer({
   const currentIndexRef = useRef(0);
   const initializedRef = useRef(false);
   const loadedClipIdRef = useRef<string | null>(null);
+  const wasPlayingRef = useRef(false);
+  const seekTokenRef = useRef(0);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
 
-  const clipSources = useMemo(
-    () =>
-      plays
-        .map((play) => play.videoClip)
-        .filter((clip): clip is NonNullable<typeof clip> => Boolean(clip))
-        .map((clip) => ({ id: clip.id, blobUrl: clip.blobUrl })),
-    [plays],
+  const clips = useMemo(
+    () => clipsProp ?? deriveClipsFromPlays(plays),
+    [clipsProp, plays],
   );
 
-  const { segments, fullDuration, playbackDuration, activeSegments } = useMemo(
-    () => buildTimelines(plays),
-    [plays],
+  const clipSources = useMemo(
+    () => clips.map((clip) => ({ id: clip.id, blobUrl: clip.blobUrl })),
+    [clips],
+  );
+
+  const { segments, fullDuration, playbackDuration, playSegments } = useMemo(
+    () => buildTimelines(clips, plays),
+    [clips, plays],
   );
 
   const [playbackTime, setPlaybackTime] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [loadedClipUrl, setLoadedClipUrl] = useState<string | null>(null);
 
-  const fullPosition = playbackToFullPosition(playbackTime, segments);
+  const fullPosition = playbackToFullPosition(playbackTime, playSegments);
   const currentSegment =
-    activeSegments.find((s) => s.playIndex === currentIndex) ??
-    activeSegments[0];
+    playSegments.find((s) => s.playIndex === currentIndex) ?? playSegments[0];
   const currentPlay = currentSegment?.play;
 
   isPlayingRef.current = isPlaying;
@@ -84,11 +103,8 @@ export function GamePlayer({
   const seekToPlaybackTime = useCallback(
     (time: number, autoplay = false): Promise<void> => {
       const video = videoRef.current;
-      const segment = activeSegments.find(
-        (s) =>
-          s.playbackStart !== null &&
-          time >= s.playbackStart &&
-          time < s.playbackEnd!,
+      const segment = playSegments.find(
+        (s) => time >= s.playbackStart && time < s.playbackEnd,
       );
       if (!video || !segment?.play.videoClip) return Promise.resolve();
 
@@ -98,23 +114,43 @@ export function GamePlayer({
       );
       const localTime = segmentLocalTime(clamped, segment);
       const clipUrl = segment.play.videoClip.blobUrl;
+      const clipId = segment.play.videoClipId;
+      const previousClipId = loadedClipIdRef.current;
+      const seekToken = ++seekTokenRef.current;
 
       seekingRef.current = true;
       setPlaybackTime(clamped);
       setCurrentIndex(segment.playIndex);
       currentIndexRef.current = segment.playIndex;
-      loadedClipIdRef.current = segment.play.videoClipId;
-      setLoadedClipUrl(clipUrl);
+      loadedClipIdRef.current = clipId;
 
-      const clipTime = playbackTimeToClipTime(clamped, segments);
+      const clipTime = playbackTimeToClipTime(clamped, playSegments);
       if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
 
       return new Promise((resolve) => {
-        const finish = () => {
-          seekingRef.current = false;
-          if (autoplay) {
-            void video.play().then(() => setIsPlaying(true));
+        let seekApplied = false;
+
+        const resumePlayback = () => {
+          if (!autoplay) return;
+
+          const playVideo = () => {
+            void video
+              .play()
+              .then(() => setIsPlaying(true))
+              .catch(() => setIsPlaying(false));
+          };
+
+          if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+            playVideo();
+          } else {
+            video.addEventListener("canplay", playVideo, { once: true });
           }
+        };
+
+        const finish = () => {
+          if (seekToken !== seekTokenRef.current) return;
+          seekingRef.current = false;
+          resumePlayback();
           resolve();
         };
 
@@ -123,61 +159,63 @@ export function GamePlayer({
           finish();
         };
 
-        if (loadedClipUrl !== clipUrl) {
+        const applySeek = () => {
+          if (seekToken !== seekTokenRef.current || seekApplied) return;
+          seekApplied = true;
+
+          if (Math.abs(video.currentTime - localTime) < 0.05) {
+            finish();
+            return;
+          }
+          video.addEventListener("seeked", onSeeked);
+          video.currentTime = localTime;
+        };
+
+        const onMetadata = () => {
+          video.removeEventListener("loadedmetadata", onMetadata);
+          applySeek();
+        };
+
+        if (previousClipId !== clipId) {
+          video.addEventListener("loadedmetadata", onMetadata);
           video.src = clipUrl;
           video.load();
-          video.addEventListener(
-            "loadedmetadata",
-            () => {
-              video.currentTime = localTime;
-            },
-            { once: true },
-          );
-          video.addEventListener("seeked", onSeeked);
+          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            onMetadata();
+          }
         } else {
-          video.currentTime = localTime;
-          video.addEventListener("seeked", onSeeked);
+          applySeek();
         }
-
-        setTimeout(() => {
-          if (seekingRef.current) finish();
-        }, 2000);
       });
     },
-    [activeSegments, playbackDuration, loadedClipUrl, segments, persistPlayhead],
+    [playSegments, playbackDuration, persistPlayhead],
   );
 
   const seekToPlay = useCallback(
     (playIndex: number, autoplay = true) => {
-      const playback = playIndexToPlaybackTime(playIndex, segments);
+      const playback = playIndexToPlaybackTime(playIndex, playSegments);
       if (playback === null) return;
       void seekToPlaybackTime(playback, autoplay);
     },
-    [segments, seekToPlaybackTime],
+    [playSegments, seekToPlaybackTime],
   );
 
   const seekToFullPosition = useCallback(
     (position: number, autoplay = false) => {
-      const segment = fullPositionToSegment(position, segments);
-      if (!segment) return;
-
-      if (segment.deleted && allowRecover && onRecoverPlay && segment.play.id) {
-        onRecoverPlay(segment.play.id);
-        return;
-      }
-
-      if (segment.deleted) return;
-
-      const playback = fullPositionToPlaybackTime(position, segments);
+      const playback = fullPositionToPlaybackTime(
+        position,
+        segments,
+        playSegments,
+      );
       if (playback !== null) {
         void seekToPlaybackTime(playback, autoplay);
       }
     },
-    [segments, allowRecover, onRecoverPlay, seekToPlaybackTime],
+    [segments, playSegments, seekToPlaybackTime],
   );
 
   useEffect(() => {
-    if (activeSegments.length === 0 || initializedRef.current) return;
+    if (playSegments.length === 0 || initializedRef.current) return;
     initializedRef.current = true;
 
     let targetPlayback = 0;
@@ -185,20 +223,22 @@ export function GamePlayer({
       const restored = clipTimeToPlaybackTime(
         persisted.clipId,
         persisted.time,
-        segments,
+        playSegments,
       );
       if (restored !== null) targetPlayback = restored;
     }
 
     void seekToPlaybackTime(targetPlayback, false);
-  }, [activeSegments.length, persisted, segments, seekToPlaybackTime]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playSegments.length, seekToPlaybackTime]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || activeSegments.length === 0) return;
+    if (!video || playSegments.length === 0) return;
 
     const syncFromVideo = () => {
       if (seekingRef.current) return;
+      if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
       const local = video.currentTime;
       const clipId =
@@ -210,37 +250,34 @@ export function GamePlayer({
       let segment = findActiveSegmentAtClipTime(
         clipId,
         local,
-        activeSegments,
+        playSegments,
       );
 
       if (!segment) {
         const playback = localClipTimeToPlaybackTime(
           clipId,
           local,
-          activeSegments,
+          playSegments,
         );
         if (playback === null) return;
         segment =
-          activeSegments.find(
-            (s) =>
-              s.playbackStart !== null &&
-              playback >= s.playbackStart &&
-              playback < s.playbackEnd!,
+          playSegments.find(
+            (s) => playback >= s.playbackStart && playback < s.playbackEnd,
           ) ?? null;
       }
 
-      if (!segment || segment.playbackStart === null) return;
+      if (!segment) return;
 
       if (local >= segment.play.endTime - 0.08) {
-        const segIdx = activeSegments.indexOf(segment);
-        const next = activeSegments[segIdx + 1];
+        const segIdx = playSegments.indexOf(segment);
+        const next = playSegments[segIdx + 1];
         if (next) {
-          void seekToPlaybackTime(next.playbackStart!, isPlayingRef.current);
+          void seekToPlaybackTime(next.playbackStart, isPlayingRef.current);
           return;
         }
         video.pause();
         setIsPlaying(false);
-        setPlaybackTime(segment.playbackEnd!);
+        setPlaybackTime(segment.playbackEnd);
         return;
       }
 
@@ -263,7 +300,7 @@ export function GamePlayer({
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("seeked", onSeeked);
     };
-  }, [activeSegments, clipSources, persistPlayhead, seekToPlaybackTime]);
+  }, [playSegments, clipSources, persistPlayhead, seekToPlaybackTime]);
 
   const togglePlay = async () => {
     const video = videoRef.current;
@@ -277,23 +314,32 @@ export function GamePlayer({
     }
   };
 
-  const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = timelineRef.current;
-    if (!el || fullDuration <= 0) return;
-
-    const rect = el.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    seekToFullPosition(ratio * fullDuration, isPlaying);
-  };
-
-  const activePlays = plays.filter((p) => !p.deletedAt);
+  const { playheadPercent, onTimelinePointerDown, onPlayheadPointerDown } =
+    useTimelineScrub({
+      timelineRef,
+      fullDuration,
+      fullPosition,
+      onSeek: (position) => {
+        void seekToFullPosition(position, isPlaying);
+      },
+      onScrubStart: () => {
+        const video = videoRef.current;
+        wasPlayingRef.current = Boolean(video && !video.paused);
+        video?.pause();
+        setIsPlaying(false);
+      },
+      onScrubEnd: () => {
+        if (wasPlayingRef.current) {
+          void videoRef.current?.play().then(() => setIsPlaying(true));
+        }
+      },
+    });
 
   const playList = (
     <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto md:max-h-[calc(100vh-280px)]">
-      {activePlays.map((play) => {
-        const segment = segments.find((s) => s.play.id === play.id);
-        if (!segment) return null;
+      {playSegments.map((segment) => {
         const index = segment.playIndex;
+        const play = segment.play;
 
         return (
           <button
@@ -309,7 +355,7 @@ export function GamePlayer({
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-semibold text-foreground">
-                Play {play.playNumber}
+                Play {segment.playNumber}
               </span>
               <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {formatDuration(segment.duration)}
@@ -331,7 +377,7 @@ export function GamePlayer({
     </div>
   );
 
-  if (!currentPlay?.videoClip || activeSegments.length === 0) {
+  if (!currentPlay?.videoClip || playSegments.length === 0) {
     return (
       <Card className="surface-card">
         <CardContent className="py-16 text-center text-muted-foreground">
@@ -341,10 +387,8 @@ export function GamePlayer({
     );
   }
 
-  const playheadPercent =
-    fullDuration > 0 ? (fullPosition / fullDuration) * 100 : 0;
-
-  const deletedCount = segments.filter((s) => s.deleted).length;
+  const currentPlayNumber =
+    currentSegment?.playNumber ?? currentIndex + 1;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
@@ -362,7 +406,7 @@ export function GamePlayer({
             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-primary/95 via-primary/70 to-transparent px-5 py-4">
               <div className="flex items-center justify-between gap-2 text-sm text-white">
                 <span className="font-heading text-lg font-bold">
-                  Play {currentPlay.playNumber}
+                  Play {currentPlayNumber}
                 </span>
                 {currentPlay.offenseTeam && (
                   <Badge className="border-0 bg-white/20 text-white backdrop-blur-sm">
@@ -390,8 +434,8 @@ export function GamePlayer({
             aria-valuemax={fullDuration}
             aria-valuenow={fullPosition}
             tabIndex={0}
-            className="relative h-12 cursor-pointer overflow-hidden rounded-xl border border-border/80 bg-muted/40"
-            onClick={handleTimelineClick}
+            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            onPointerDown={onTimelinePointerDown}
             onKeyDown={(e) => {
               if (e.key === "ArrowRight") {
                 void seekToPlaybackTime(
@@ -407,43 +451,43 @@ export function GamePlayer({
             {segments.map((segment) => {
               const left = (segment.globalStart / fullDuration) * 100;
               const width = (segment.duration / fullDuration) * 100;
-              const isActive =
-                !segment.deleted && segment.playIndex === currentIndex;
+
+              if (isGapSegment(segment)) {
+                return (
+                  <div
+                    key={`gap-${segment.globalStart}-${segment.globalEnd}`}
+                    className="absolute top-0 h-full border-r border-white/20 bg-muted-foreground/20"
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                  />
+                );
+              }
+
+              if (!isPlaySegment(segment)) return null;
+
+              const isActive = segment.playIndex === currentIndex;
+              const offenseTone = offenseTimelineTone(
+                segment.play.offenseTeam,
+                homeTeam,
+                awayTeam,
+              );
 
               return (
                 <button
                   key={segment.play.id}
                   type="button"
                   title={
-                    segment.deleted
-                      ? `Play ${segment.play.playNumber} (removed — click to restore)`
-                      : `Play ${segment.play.playNumber}`
+                    segment.play.offenseTeam
+                      ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
+                      : `Play ${segment.playNumber}`
                   }
-                  className={cn(
-                    "absolute top-0 flex h-full items-center justify-center border-r border-white/40 text-[10px] font-bold transition-colors sm:text-xs",
-                    segment.deleted
-                      ? "bg-muted-foreground/30 text-muted-foreground line-through hover:bg-accent/30 hover:text-accent"
-                      : isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-primary/50 text-white hover:bg-primary/70",
-                  )}
+                  className={playTimelineSegmentClass(offenseTone, isActive)}
                   style={{ left: `${left}%`, width: `${width}%` }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (segment.deleted && allowRecover && onRecoverPlay) {
-                      onRecoverPlay(segment.play.id);
-                    } else if (!segment.deleted) {
-                      seekToPlay(segment.playIndex, true);
-                    }
+                    seekToPlay(segment.playIndex, true);
                   }}
                 >
-                  {segment.deleted ? (
-                    <RotateCcw className="h-3 w-3" />
-                  ) : width > 4 ? (
-                    segment.play.playNumber
-                  ) : (
-                    ""
-                  )}
+                  {width > 4 ? segment.playNumber : ""}
                 </button>
               );
             })}
@@ -452,14 +496,14 @@ export function GamePlayer({
               style={{ left: `${playheadPercent}%` }}
             />
             <div
-              className="pointer-events-none absolute top-1/2 z-10 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-card bg-accent shadow-md"
-              style={{ left: `${playheadPercent}%` }}
+              role="presentation"
+              className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
+              style={{ left: `${playheadPercent}%`, touchAction: "none" }}
+              onPointerDown={onPlayheadPointerDown}
             />
           </div>
           <p className="text-center text-xs text-muted-foreground">
-            {allowRecover && deletedCount > 0
-              ? "Gray segments are removed plays — click to restore"
-              : "Tap a play segment or scrub anywhere on the timeline"}
+            Drag the timeline or playhead to scrub
           </p>
         </div>
 
@@ -470,15 +514,13 @@ export function GamePlayer({
               size="icon"
               className="rounded-xl"
               disabled={
-                activeSegments.findIndex(
-                  (s) => s.playIndex === currentIndex,
-                ) <= 0
+                playSegments.findIndex((s) => s.playIndex === currentIndex) <= 0
               }
               onClick={() => {
-                const idx = activeSegments.findIndex(
+                const idx = playSegments.findIndex(
                   (s) => s.playIndex === currentIndex,
                 );
-                if (idx > 0) seekToPlay(activeSegments[idx - 1].playIndex, true);
+                if (idx > 0) seekToPlay(playSegments[idx - 1].playIndex, true);
               }}
             >
               <SkipBack className="h-4 w-4" />
@@ -505,17 +547,15 @@ export function GamePlayer({
               size="icon"
               className="rounded-xl"
               disabled={
-                activeSegments.findIndex(
-                  (s) => s.playIndex === currentIndex,
-                ) >=
-                activeSegments.length - 1
+                playSegments.findIndex((s) => s.playIndex === currentIndex) >=
+                playSegments.length - 1
               }
               onClick={() => {
-                const idx = activeSegments.findIndex(
+                const idx = playSegments.findIndex(
                   (s) => s.playIndex === currentIndex,
                 );
-                if (idx < activeSegments.length - 1) {
-                  seekToPlay(activeSegments[idx + 1].playIndex, true);
+                if (idx < playSegments.length - 1) {
+                  seekToPlay(playSegments[idx + 1].playIndex, true);
                 }
               }}
             >
@@ -523,8 +563,8 @@ export function GamePlayer({
             </Button>
           </div>
           <p className="text-sm font-medium text-muted-foreground">
-            {activeSegments.findIndex((s) => s.playIndex === currentIndex) + 1}{" "}
-            of {activeSegments.length}
+            {playSegments.findIndex((s) => s.playIndex === currentIndex) + 1}{" "}
+            of {playSegments.length}
           </p>
         </div>
 
@@ -537,7 +577,7 @@ export function GamePlayer({
               })}
             >
               <List className="mr-2 h-4 w-4" />
-              All plays ({activePlays.length})
+              All plays ({playSegments.length})
             </SheetTrigger>
             <SheetContent side="bottom" className="h-[75vh] rounded-t-2xl">
               <SheetHeader>

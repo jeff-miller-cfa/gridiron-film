@@ -16,9 +16,7 @@ export default async function GameWatchPage({ params }: PageProps) {
 
   if (!game) notFound();
 
-  const plays = [...(game.plays ?? [])]
-    .filter((p) => !p.deletedAt)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const plays = game.plays ?? [];
 
   return (
     <PageShell>
@@ -49,6 +47,7 @@ export default async function GameWatchPage({ params }: PageProps) {
 
         <GamePlayer
           plays={plays}
+          clips={game.videoClips ?? []}
           homeTeam={game.homeTeam}
           awayTeam={game.awayTeam}
         />

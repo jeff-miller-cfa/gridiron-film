@@ -1,23 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
-import type { FFmpeg } from "@ffmpeg/ffmpeg";
 import { buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
   compressVideoForWeb,
   shouldCompressVideo,
 } from "@/lib/compress-video";
-import { getFfmpeg } from "@/lib/ffmpeg-client";
+import { getUploadFfmpegPool } from "@/lib/ffmpeg-client";
 import { extractVideoCaptureTime, getVideoDuration } from "@/lib/video";
-import { Upload } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { CheckCircle2, CircleAlert, Loader2, Upload } from "lucide-react";
 
 type UploadedClip = {
   blobUrl: string;
   filename: string;
   capturedAt: string;
   duration: number;
+};
+
+type UploadItemStatus =
+  | "queued"
+  | "compressing"
+  | "preparing"
+  | "uploading"
+  | "done"
+  | "error";
+
+type UploadItem = {
+  id: string;
+  filename: string;
+  status: UploadItemStatus;
+  progress: number;
+  message: string;
 };
 
 type VideoUploaderProps = {
@@ -30,103 +46,279 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function videoFilesFromList(files: FileList | File[]): File[] {
+  return Array.from(files).filter(
+    (file) =>
+      file.type.startsWith("video/") ||
+      /\.(mp4|mov|m4v|webm|avi|mkv)$/i.test(file.name),
+  );
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  if (error && typeof error === "object") {
+    const maybe = error as { message?: unknown };
+    if (typeof maybe.message === "string" && maybe.message) {
+      return maybe.message;
+    }
+  }
+  return "Upload failed";
+}
+
+function statusLabel(status: UploadItemStatus): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "compressing":
+      return "Compressing";
+    case "preparing":
+      return "Preparing";
+    case "uploading":
+      return "Uploading";
+    case "done":
+      return "Done";
+    case "error":
+      return "Failed";
+  }
+}
+
 export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("");
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [batchStatus, setBatchStatus] = useState("");
+  const [isBusy, setIsBusy] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
+  const ffmpegPoolRef = useRef(getUploadFfmpegPool());
 
-  const handleFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const hasActiveUpload =
+    isBusy ||
+    uploadItems.some(
+      (item) => item.status !== "done" && item.status !== "error",
+    );
 
-    setUploading(true);
-    setProgress(0);
-    setStatus("Preparing uploads...");
+  const updateItem = (id: string, patch: Partial<UploadItem>) => {
+    setUploadItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    );
+  };
 
-    let ffmpeg: FFmpeg | null = null;
+  const processClip = async (
+    file: File,
+    itemId: string,
+  ): Promise<UploadedClip> => {
+    let uploadFile = file;
+    const needsCompression = shouldCompressVideo(file);
 
-    try {
-      const clips: UploadedClip[] = [];
-      const fileArray = Array.from(files);
-      const total = fileArray.length;
+    if (needsCompression) {
+      updateItem(itemId, {
+        status: "compressing",
+        progress: 0,
+        message: "Waiting for video processor...",
+      });
 
-      for (let i = 0; i < fileArray.length; i++) {
-        const file = fileArray[i];
-        const fileBaseProgress = i / total;
-        const fileSpan = 1 / total;
+      const ffmpeg = await ffmpegPoolRef.current.acquire();
+      const jobId = crypto.randomUUID();
 
-        let uploadFile = file;
+      try {
+        updateItem(itemId, {
+          message: "Compressing for faster streaming...",
+        });
 
-        if (shouldCompressVideo(file)) {
-          setStatus(
-            `Compressing ${file.name} (${i + 1}/${total}) for faster streaming...`,
-          );
-
-          if (!ffmpeg) {
-            setStatus("Loading video processor...");
-            ffmpeg = await getFfmpeg();
-          }
-
-          uploadFile = await compressVideoForWeb(file, {
-            ffmpeg,
-            onProgress: (ratio) => {
-              setProgress((fileBaseProgress + ratio * 0.65 * fileSpan) * 100);
-            },
-          });
-
-          setStatus(
-            `Compressed ${file.name}: ${formatSize(file.size)} → ${formatSize(uploadFile.size)}`,
-          );
-        } else {
-          setStatus(`Preparing ${file.name} (${i + 1}/${total})...`);
-        }
-
-        const [capturedAt, duration] = await Promise.all([
-          extractVideoCaptureTime(file),
-          getVideoDuration(uploadFile),
-        ]);
-
-        setStatus(`Uploading ${uploadFile.name} (${i + 1}/${total})...`);
-
-        const blob = await upload(`games/${gameId}/${uploadFile.name}`, uploadFile, {
-          access: "public",
-          handleUploadUrl: "/api/upload",
-          onUploadProgress: (p) => {
-            const uploadRatio = (p.percentage ?? 0) / 100;
-            const compressWeight = shouldCompressVideo(file) ? 0.65 : 0;
-            const combined = compressWeight + uploadRatio * (1 - compressWeight);
-            setProgress((fileBaseProgress + combined * fileSpan) * 100);
+        uploadFile = await compressVideoForWeb(file, {
+          ffmpeg,
+          jobId,
+          onProgress: (ratio) => {
+            updateItem(itemId, {
+              progress: Math.round(ratio * 70),
+            });
           },
         });
-
-        clips.push({
-          blobUrl: blob.url,
-          filename: uploadFile.name,
-          capturedAt: capturedAt.toISOString(),
-          duration,
-        });
+      } finally {
+        ffmpegPoolRef.current.release(ffmpeg);
       }
 
-      setStatus("Saving clips and creating plays...");
+      updateItem(itemId, {
+        progress: 70,
+        message: `Compressed to ${formatSize(uploadFile.size)}`,
+      });
+    }
+
+    updateItem(itemId, {
+      status: "preparing",
+      progress: needsCompression ? 72 : 5,
+      message: "Reading clip metadata...",
+    });
+
+    const [capturedAt, duration] = await Promise.all([
+      extractVideoCaptureTime(file),
+      getVideoDuration(uploadFile),
+    ]);
+
+    updateItem(itemId, {
+      status: "uploading",
+      progress: needsCompression ? 75 : 10,
+      message: "Uploading...",
+    });
+
+    const blob = await upload(`games/${gameId}/${uploadFile.name}`, uploadFile, {
+      access: "public",
+      handleUploadUrl: "/api/upload",
+      onUploadProgress: (progressEvent) => {
+        const uploadRatio = (progressEvent.percentage ?? 0) / 100;
+        const base = needsCompression ? 75 : 10;
+        const span = needsCompression ? 25 : 90;
+        updateItem(itemId, {
+          progress: Math.round(base + uploadRatio * span),
+        });
+      },
+    });
+
+    updateItem(itemId, {
+      status: "done",
+      progress: 100,
+      message: "Uploaded",
+    });
+
+    return {
+      blobUrl: blob.url,
+      filename: uploadFile.name,
+      capturedAt: capturedAt.toISOString(),
+      duration,
+    };
+  };
+
+  const handleFiles = async (files: FileList | File[] | null) => {
+    const fileArray = videoFilesFromList(files ?? []);
+    if (!fileArray.length) return;
+
+    const items: UploadItem[] = fileArray.map((file) => ({
+      id: crypto.randomUUID(),
+      filename: file.name,
+      status: "queued",
+      progress: 0,
+      message: "Queued",
+    }));
+
+    setUploadItems(items);
+    setBatchStatus("");
+    setIsBusy(true);
+
+    try {
+      const results = await Promise.allSettled(
+        fileArray.map((file, index) => processClip(file, items[index]!.id)),
+      );
+
+      const clips: UploadedClip[] = [];
+      const failures: string[] = [];
+
+      results.forEach((result, index) => {
+        const filename = fileArray[index]!.name;
+        if (result.status === "fulfilled") {
+          clips.push(result.value);
+          return;
+        }
+
+        failures.push(filename);
+        updateItem(items[index]!.id, {
+          status: "error",
+          message: errorMessage(result.reason),
+        });
+      });
+
+      if (clips.length === 0) {
+        setBatchStatus("All uploads failed.");
+        return;
+      }
+
+      setBatchStatus("Saving clips and creating plays...");
+
       const res = await fetch(`/api/games/${gameId}/clips`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clips }),
       });
 
-      if (!res.ok) throw new Error("Failed to save clips");
+      if (!res.ok) {
+        setBatchStatus("Error: Failed to save clips.");
+        return;
+      }
 
-      setProgress(100);
-      setStatus("Upload complete!");
+      if (failures.length > 0) {
+        setBatchStatus(
+          `Saved ${clips.length} clip${clips.length === 1 ? "" : "s"}. ${failures.length} failed.`,
+        );
+      } else {
+        setBatchStatus("Upload complete!");
+      }
+
       onUploaded();
-    } catch (error) {
-      setStatus(`Error: ${(error as Error).message}`);
     } finally {
-      setUploading(false);
+      setIsBusy(false);
+    }
+  };
+
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (hasActiveUpload) return;
+
+    dragCounterRef.current += 1;
+    if (event.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (hasActiveUpload) return;
+
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (hasActiveUpload) return;
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    if (hasActiveUpload) return;
+
+    const videos = videoFilesFromList(event.dataTransfer.files);
+    if (videos.length > 0) {
+      void handleFiles(videos);
+      return;
+    }
+
+    if (event.dataTransfer.files.length > 0) {
+      setBatchStatus("Please drop video files only.");
     }
   };
 
   return (
-    <div className="space-y-4 rounded-2xl border-2 border-dashed border-primary/20 bg-primary/[0.02] p-8 transition-colors hover:border-primary/30 hover:bg-primary/[0.04]">
+    <div
+      className={cn(
+        "space-y-4 rounded-2xl border-2 border-dashed p-8 transition-colors",
+        isDragging
+          ? "border-primary bg-primary/10"
+          : "border-primary/20 bg-primary/[0.02] hover:border-primary/30 hover:bg-primary/[0.04]",
+      )}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <div className="text-center">
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <Upload className="h-7 w-7" />
@@ -135,9 +327,9 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
           Upload game footage
         </p>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-          Select multiple clips — they&apos;ll be ordered by capture time. Large
-          or iPhone MOV files are compressed to web-friendly MP4 before upload
-          for smoother playback.
+          Drag and drop videos here, or choose files. Clips are ordered by
+          capture time. Large or iPhone MOV files are compressed to web-friendly
+          MP4 before upload for smoother playback.
         </p>
       </div>
 
@@ -148,24 +340,55 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
             accept="video/*"
             multiple
             className="hidden"
-            disabled={uploading}
-            onChange={(e) => void handleFiles(e.target.files)}
+            disabled={hasActiveUpload}
+            onChange={(e) => {
+              void handleFiles(e.target.files);
+              e.target.value = "";
+            }}
           />
-          <span className={buttonVariants({ className: "h-11 rounded-xl px-6" })}>
+          <span
+            className={buttonVariants({
+              className: cn("h-11 rounded-xl px-6", hasActiveUpload && "opacity-50"),
+            })}
+          >
             Choose videos
           </span>
         </label>
       </div>
 
-      {uploading && (
+      {uploadItems.length > 0 && (
         <div className="space-y-2">
-          <Progress value={progress} />
-          <p className="text-center text-sm text-muted-foreground">{status}</p>
+          {uploadItems.map((item) => (
+            <div
+              key={item.id}
+              className="rounded-xl border border-border/80 bg-card px-3 py-2.5"
+            >
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{item.filename}</p>
+                  <p className="text-xs text-muted-foreground">{item.message}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  {item.status === "done" ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-accent" />
+                  ) : item.status === "error" ? (
+                    <CircleAlert className="h-3.5 w-3.5 text-destructive" />
+                  ) : item.status === "queued" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin opacity-50" />
+                  ) : (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  {statusLabel(item.status)}
+                </div>
+              </div>
+              <Progress value={item.progress} />
+            </div>
+          ))}
         </div>
       )}
 
-      {!uploading && status && (
-        <p className="text-center text-sm text-muted-foreground">{status}</p>
+      {batchStatus && (
+        <p className="text-center text-sm text-muted-foreground">{batchStatus}</p>
       )}
     </div>
   );

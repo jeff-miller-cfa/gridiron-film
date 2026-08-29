@@ -6,7 +6,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { getAllGames } from "@/lib/games";
 import { Plus } from "lucide-react";
-import { AdminLogoutButton } from "@/components/admin-logout-button";
 
 export const dynamic = "force-dynamic";
 
@@ -21,13 +20,10 @@ export default async function AdminDashboardPage() {
           title="Manage games"
           description="Upload footage, define plays, and export stitched film."
           actions={
-            <>
-              <Link href="/admin/games/new" className={buttonVariants()}>
-                <Plus className="mr-2 h-4 w-4" />
-                New game
-              </Link>
-              <AdminLogoutButton />
-            </>
+            <Link href="/admin/games/new" className={buttonVariants()}>
+              <Plus className="mr-2 h-4 w-4" />
+              New game
+            </Link>
           }
         />
 
@@ -45,8 +41,7 @@ export default async function AdminDashboardPage() {
               awayTeam: game.awayTeam,
               stadium: game.stadium,
               gameDateTime: game.gameDateTime,
-              playCount:
-                game.plays?.filter((p) => !p.deletedAt).length ?? 0,
+              playCount: game.plays?.length ?? 0,
               clipCount: game.videoClips?.length ?? 0,
             }))}
           />

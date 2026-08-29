@@ -1,85 +1,199 @@
-import type { PlayWithClip } from "@/types";
+import { playIdentityKey, sortPlays } from "@/lib/plays";
+import type { PlayWithClip, VideoClipRecord } from "@/types";
 
-export type TimelineSegment = {
+export type GapPart = {
+  videoClipId: string;
+  clipStart: number;
+  clipEnd: number;
+};
+
+export type TimelineGap = {
+  kind: "gap";
+  parts: GapPart[];
+  globalStart: number;
+  globalEnd: number;
+  duration: number;
+};
+
+export type TimelinePlaySegment = {
+  kind: "play";
   playIndex: number;
+  playNumber: number;
   play: PlayWithClip;
   globalStart: number;
   globalEnd: number;
   duration: number;
-  deleted: boolean;
-  playbackStart: number | null;
-  playbackEnd: number | null;
+  playbackStart: number;
+  playbackEnd: number;
 };
 
-export function buildTimelines(plays: PlayWithClip[]): {
-  segments: TimelineSegment[];
-  fullDuration: number;
-  playbackDuration: number;
-  activeSegments: TimelineSegment[];
-} {
-  const sorted = [...plays]
-    .map((play, playIndex) => ({ play, playIndex }))
-    .filter(({ play }) => play.videoClip)
-    .sort((a, b) => a.play.sortOrder - b.play.sortOrder);
+export type TimelineSegment = TimelineGap | TimelinePlaySegment;
 
-  let fullOffset = 0;
-  let playbackOffset = 0;
-  const segments: TimelineSegment[] = [];
+export function isPlaySegment(
+  segment: TimelineSegment,
+): segment is TimelinePlaySegment {
+  return segment.kind === "play";
+}
 
-  for (const { play, playIndex } of sorted) {
-    const duration = Math.max(0, play.endTime - play.startTime);
-    if (duration <= 0) continue;
+export function isGapSegment(segment: TimelineSegment): segment is TimelineGap {
+  return segment.kind === "gap";
+}
 
-    const deleted = Boolean(play.deletedAt);
-    const segment: TimelineSegment = {
-      playIndex,
-      play,
-      globalStart: fullOffset,
-      globalEnd: fullOffset + duration,
-      duration,
-      deleted,
-      playbackStart: deleted ? null : playbackOffset,
-      playbackEnd: deleted ? null : playbackOffset + duration,
-    };
+const GAP_EPSILON = 0.05;
 
-    if (!deleted) playbackOffset += duration;
-    fullOffset += duration;
-    segments.push(segment);
+function mergeAdjacentGaps(segments: TimelineSegment[]): TimelineSegment[] {
+  const merged: TimelineSegment[] = [];
+
+  for (const segment of segments) {
+    const previous = merged.at(-1);
+    if (
+      previous &&
+      isGapSegment(previous) &&
+      isGapSegment(segment) &&
+      Math.abs(previous.globalEnd - segment.globalStart) <= GAP_EPSILON
+    ) {
+      merged[merged.length - 1] = {
+        kind: "gap",
+        parts: [...previous.parts, ...segment.parts],
+        globalStart: previous.globalStart,
+        globalEnd: segment.globalEnd,
+        duration: segment.globalEnd - previous.globalStart,
+      };
+      continue;
+    }
+
+    merged.push(segment);
   }
 
-  const activeSegments = segments.filter((s) => !s.deleted);
+  return merged;
+}
+
+export function gapToPlayGaps(gap: TimelineGap): Array<{
+  videoClipId: string;
+  startTime: number;
+  endTime: number;
+}> {
+  return gap.parts.map((part) => ({
+    videoClipId: part.videoClipId,
+    startTime: part.clipStart,
+    endTime: part.clipEnd,
+  }));
+}
+
+export function buildTimelines(
+  clips: VideoClipRecord[],
+  plays: PlayWithClip[],
+): {
+  segments: TimelineSegment[];
+  playSegments: TimelinePlaySegment[];
+  gapSegments: TimelineGap[];
+  fullDuration: number;
+  playbackDuration: number;
+} {
+  const orderedClips = [...clips].sort((a, b) => a.sortOrder - b.sortOrder);
+  const orderedClipIds = orderedClips.map((clip) => clip.id);
+  const sortedPlays = sortPlays(
+    plays.filter((play) => play.videoClip),
+    orderedClipIds,
+  );
+
+  const playIndexByKey = new Map(
+    sortedPlays.map((play, index) => [playIdentityKey(play), index]),
+  );
+
+  const segments: TimelineSegment[] = [];
+  const playSegments: TimelinePlaySegment[] = [];
+  const gapSegments: TimelineGap[] = [];
+  let fullOffset = 0;
+  let playbackOffset = 0;
+
+  for (const clip of orderedClips) {
+    const clipPlays = sortedPlays.filter((play) => play.videoClipId === clip.id);
+    let cursor = 0;
+
+    const pushGap = (start: number, end: number) => {
+      const duration = end - start;
+      if (duration <= GAP_EPSILON) return;
+
+      const gap: TimelineGap = {
+        kind: "gap",
+        parts: [{ videoClipId: clip.id, clipStart: start, clipEnd: end }],
+        globalStart: fullOffset + start,
+        globalEnd: fullOffset + end,
+        duration,
+      };
+      gapSegments.push(gap);
+      segments.push(gap);
+    };
+
+    for (const play of clipPlays) {
+      if (play.startTime > cursor + GAP_EPSILON) {
+        pushGap(cursor, play.startTime);
+      }
+
+      const duration = Math.max(0, play.endTime - play.startTime);
+      if (duration <= GAP_EPSILON) continue;
+
+      const playIndex = playIndexByKey.get(playIdentityKey(play)) ?? 0;
+      const segment: TimelinePlaySegment = {
+        kind: "play",
+        playIndex,
+        playNumber: playIndex + 1,
+        play,
+        globalStart: fullOffset + play.startTime,
+        globalEnd: fullOffset + play.endTime,
+        duration,
+        playbackStart: playbackOffset,
+        playbackEnd: playbackOffset + duration,
+      };
+
+      playSegments.push(segment);
+      segments.push(segment);
+      playbackOffset += duration;
+      cursor = Math.max(cursor, play.endTime);
+    }
+
+    if (cursor < clip.duration - GAP_EPSILON) {
+      pushGap(cursor, clip.duration);
+    }
+
+    fullOffset += clip.duration;
+  }
+
+  const mergedSegments = mergeAdjacentGaps(segments);
+  const mergedGapSegments = mergedSegments.filter(isGapSegment);
 
   return {
-    segments,
+    segments: mergedSegments,
+    playSegments,
+    gapSegments: mergedGapSegments,
     fullDuration: fullOffset,
     playbackDuration: playbackOffset,
-    activeSegments,
   };
 }
 
-export function globalTimeToSegment(
+export function globalTimeToPlaySegment(
   globalTime: number,
-  segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
   usePlayback = false,
-): TimelineSegment | null {
-  if (segments.length === 0) return null;
+): TimelinePlaySegment | null {
+  if (playSegments.length === 0) return null;
 
   const maxTime = usePlayback
-    ? segments.filter((s) => !s.deleted).at(-1)?.playbackEnd ?? 0
-    : segments.at(-1)!.globalEnd;
+    ? playSegments.at(-1)!.playbackEnd
+    : playSegments.at(-1)!.globalEnd;
 
   const clamped = Math.max(0, Math.min(globalTime, maxTime - 0.001));
 
-  for (const segment of segments) {
-    if (segment.deleted) continue;
-    const start = usePlayback ? segment.playbackStart! : segment.globalStart;
-    const end = usePlayback ? segment.playbackEnd! : segment.globalEnd;
+  for (const segment of playSegments) {
+    const start = usePlayback ? segment.playbackStart : segment.globalStart;
+    const end = usePlayback ? segment.playbackEnd : segment.globalEnd;
     if (clamped >= start && clamped < end) {
       return segment;
     }
   }
 
-  return segments.filter((s) => !s.deleted).at(-1) ?? null;
+  return playSegments.at(-1) ?? null;
 }
 
 export function fullPositionToSegment(
@@ -87,10 +201,9 @@ export function fullPositionToSegment(
   segments: TimelineSegment[],
 ): TimelineSegment | null {
   if (segments.length === 0) return null;
-  const clamped = Math.max(
-    0,
-    Math.min(fullPosition, segments.at(-1)!.globalEnd - 0.001),
-  );
+
+  const maxEnd = segments.at(-1)!.globalEnd;
+  const clamped = Math.max(0, Math.min(fullPosition, maxEnd - 0.001));
 
   for (const segment of segments) {
     if (clamped >= segment.globalStart && clamped < segment.globalEnd) {
@@ -103,34 +216,26 @@ export function fullPositionToSegment(
 
 export function segmentLocalTime(
   playbackTime: number,
-  segment: TimelineSegment,
+  segment: TimelinePlaySegment,
 ): number {
-  const offset = playbackTime - (segment.playbackStart ?? 0);
+  const offset = playbackTime - segment.playbackStart;
   return segment.play.startTime + offset;
 }
 
 export function playIndexToPlaybackTime(
   playIndex: number,
-  segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): number | null {
-  const segment = segments.find((s) => s.playIndex === playIndex && !s.deleted);
+  const segment = playSegments.find((s) => s.playIndex === playIndex);
   return segment?.playbackStart ?? null;
-}
-
-export function playIndexToFullPosition(
-  playIndex: number,
-  segments: TimelineSegment[],
-): number | null {
-  const segment = segments.find((s) => s.playIndex === playIndex);
-  return segment?.globalStart ?? null;
 }
 
 export function playbackToFullPosition(
   playbackTime: number,
-  segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): number {
-  const segment = globalTimeToSegment(playbackTime, segments, true);
-  if (!segment || segment.playbackStart === null) return 0;
+  const segment = globalTimeToPlaySegment(playbackTime, playSegments, true);
+  if (!segment) return 0;
 
   const offset = playbackTime - segment.playbackStart;
   return segment.globalStart + offset;
@@ -139,34 +244,29 @@ export function playbackToFullPosition(
 export function fullPositionToPlaybackTime(
   fullPosition: number,
   segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): number | null {
   const segment = fullPositionToSegment(fullPosition, segments);
-  if (!segment) return null;
-  if (segment.deleted) return null;
+  if (!segment || isGapSegment(segment)) return null;
 
   const offset = fullPosition - segment.globalStart;
-  return (segment.playbackStart ?? 0) + offset;
+  return segment.playbackStart + offset;
 }
 
 export function clipTimeToPlaybackTime(
   clipId: string,
   localTime: number,
-  segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): number | null {
-  const activeSegments = segments.filter((s) => !s.deleted);
-  return localClipTimeToPlaybackTime(clipId, localTime, activeSegments);
+  return localClipTimeToPlaybackTime(clipId, localTime, playSegments);
 }
 
 export function playbackTimeToClipTime(
   playbackTime: number,
-  segments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): { clipId: string; time: number } | null {
-  const segment = segments.find(
-    (s) =>
-      !s.deleted &&
-      s.playbackStart !== null &&
-      playbackTime >= s.playbackStart &&
-      playbackTime < s.playbackEnd!,
+  const segment = playSegments.find(
+    (s) => playbackTime >= s.playbackStart && playbackTime < s.playbackEnd,
   );
   if (!segment) return null;
 
@@ -203,9 +303,9 @@ export function resolveClipIdFromVideo(
 export function findActiveSegmentAtClipTime(
   clipId: string,
   localTime: number,
-  activeSegments: TimelineSegment[],
-): TimelineSegment | null {
-  const matches = activeSegments.filter(
+  playSegments: TimelinePlaySegment[],
+): TimelinePlaySegment | null {
+  const matches = playSegments.filter(
     (s) =>
       s.play.videoClipId === clipId &&
       localTime >= s.play.startTime - 0.05 &&
@@ -213,20 +313,20 @@ export function findActiveSegmentAtClipTime(
   );
 
   if (matches.length === 0) return null;
-  return matches.sort((a, b) => a.play.sortOrder - b.play.sortOrder)[0];
+  return matches.sort((a, b) => a.play.startTime - b.play.startTime)[0];
 }
 
 export function localClipTimeToPlaybackTime(
   clipId: string,
   localTime: number,
-  activeSegments: TimelineSegment[],
+  playSegments: TimelinePlaySegment[],
 ): number | null {
   const segment = findActiveSegmentAtClipTime(
     clipId,
     localTime,
-    activeSegments,
+    playSegments,
   );
-  if (!segment || segment.playbackStart === null) return null;
+  if (!segment) return null;
 
   return segment.playbackStart + (localTime - segment.play.startTime);
 }
