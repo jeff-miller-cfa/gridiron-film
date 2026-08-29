@@ -153,16 +153,8 @@ export function clipTimeToPlaybackTime(
   localTime: number,
   segments: TimelineSegment[],
 ): number | null {
-  const segment = segments.find(
-    (s) =>
-      !s.deleted &&
-      s.play.videoClipId === clipId &&
-      localTime >= s.play.startTime - 0.05 &&
-      localTime < s.play.endTime,
-  );
-  if (!segment || segment.playbackStart === null) return null;
-
-  return segment.playbackStart + (localTime - segment.play.startTime);
+  const activeSegments = segments.filter((s) => !s.deleted);
+  return localClipTimeToPlaybackTime(clipId, localTime, activeSegments);
 }
 
 export function playbackTimeToClipTime(
@@ -182,4 +174,59 @@ export function playbackTimeToClipTime(
     clipId: segment.play.videoClipId,
     time: segmentLocalTime(playbackTime, segment),
   };
+}
+
+export function resolveClipIdFromVideo(
+  video: HTMLVideoElement,
+  clips: Array<{ id: string; blobUrl: string }>,
+): string | null {
+  const src = video.currentSrc || video.src;
+  if (!src) return null;
+
+  for (const clip of clips) {
+    if (src === clip.blobUrl) return clip.id;
+
+    try {
+      const srcUrl = new URL(src, "http://localhost");
+      const blobUrl = new URL(clip.blobUrl, "http://localhost");
+      if (srcUrl.pathname === blobUrl.pathname) return clip.id;
+    } catch {
+      if (src.includes(clip.blobUrl) || clip.blobUrl.includes(src)) {
+        return clip.id;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function findActiveSegmentAtClipTime(
+  clipId: string,
+  localTime: number,
+  activeSegments: TimelineSegment[],
+): TimelineSegment | null {
+  const matches = activeSegments.filter(
+    (s) =>
+      s.play.videoClipId === clipId &&
+      localTime >= s.play.startTime - 0.05 &&
+      localTime < s.play.endTime + 0.001,
+  );
+
+  if (matches.length === 0) return null;
+  return matches.sort((a, b) => a.play.sortOrder - b.play.sortOrder)[0];
+}
+
+export function localClipTimeToPlaybackTime(
+  clipId: string,
+  localTime: number,
+  activeSegments: TimelineSegment[],
+): number | null {
+  const segment = findActiveSegmentAtClipTime(
+    clipId,
+    localTime,
+    activeSegments,
+  );
+  if (!segment || segment.playbackStart === null) return null;
+
+  return segment.playbackStart + (localTime - segment.play.startTime);
 }

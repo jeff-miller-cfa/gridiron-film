@@ -10,16 +10,19 @@ import { formatDuration } from "@/lib/video";
 import {
   buildTimelines,
   clipTimeToPlaybackTime,
+  findActiveSegmentAtClipTime,
   fullPositionToPlaybackTime,
   fullPositionToSegment,
+  localClipTimeToPlaybackTime,
   playbackToFullPosition,
   playIndexToPlaybackTime,
   playbackTimeToClipTime,
+  resolveClipIdFromVideo,
   segmentLocalTime,
 } from "@/lib/player-timeline";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
 import type { PlayDraft, PlayWithClip, VideoClipRecord } from "@/types";
-import { RotateCcw, Scissors, Trash2 } from "lucide-react";
+import { Pause, Play, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type PlayEditorProps = {
@@ -46,9 +49,12 @@ export function PlayEditor({
   const seekingRef = useRef(false);
   const currentIndexRef = useRef(0);
   const initializedRef = useRef(false);
+  const loadedClipIdRef = useRef<string | null>(null);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
 
   const [playbackTime, setPlaybackTime] = useState(0);
+  const [clipLocalTime, setClipLocalTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [selectedPlayIndex, setSelectedPlayIndex] = useState<number | null>(
     null,
   );
@@ -79,7 +85,7 @@ export function PlayEditor({
   const fullPosition = playbackToFullPosition(playbackTime, segments);
 
   const seekToPlaybackTime = useCallback(
-    (time: number): Promise<void> => {
+    (time: number, autoplay = false): Promise<void> => {
       const video = videoRef.current;
       const segment = activeSegments.find(
         (s) =>
@@ -95,11 +101,15 @@ export function PlayEditor({
       );
       const localTime = segmentLocalTime(clamped, segment);
       const clipUrl = segment.play.videoClip.blobUrl;
+      const clipId = segment.play.videoClipId;
 
       seekingRef.current = true;
       setPlaybackTime(clamped);
+      setClipLocalTime(localTime);
       setSelectedPlayIndex(segment.playIndex);
       currentIndexRef.current = segment.playIndex;
+      loadedClipIdRef.current = clipId;
+      setLoadedClipUrl(clipUrl);
 
       const clipTime = playbackTimeToClipTime(clamped, segments);
       if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
@@ -107,6 +117,9 @@ export function PlayEditor({
       return new Promise((resolve) => {
         const finish = () => {
           seekingRef.current = false;
+          if (autoplay) {
+            void video.play().then(() => setIsPlaying(true));
+          }
           resolve();
         };
 
@@ -118,7 +131,6 @@ export function PlayEditor({
         if (loadedClipUrl !== clipUrl) {
           video.src = clipUrl;
           video.load();
-          setLoadedClipUrl(clipUrl);
           video.addEventListener(
             "loadedmetadata",
             () => {
@@ -186,39 +198,70 @@ export function PlayEditor({
     const video = videoRef.current;
     if (!video || activeSegments.length === 0) return;
 
-    const onTimeUpdate = () => {
+    const syncFromVideo = () => {
       if (seekingRef.current) return;
 
       const local = video.currentTime;
-      const clipUrl = loadedClipUrl ?? video.currentSrc;
+      const clipId =
+        loadedClipIdRef.current ?? resolveClipIdFromVideo(video, clips);
+      if (!clipId) return;
 
-      let segment = activeSegments.find(
-        (s) =>
-          s.play.videoClip?.blobUrl === clipUrl &&
-          local >= s.play.startTime - 0.05 &&
-          local < s.play.endTime,
+      loadedClipIdRef.current = clipId;
+
+      let segment = findActiveSegmentAtClipTime(
+        clipId,
+        local,
+        activeSegments,
       );
 
       if (!segment) {
-        segment = activeSegments.find(
-          (s) => s.playIndex === currentIndexRef.current,
+        const playback = localClipTimeToPlaybackTime(
+          clipId,
+          local,
+          activeSegments,
         );
+        if (playback === null) return;
+        segment =
+          activeSegments.find(
+            (s) =>
+              s.playbackStart !== null &&
+              playback >= s.playbackStart &&
+              playback < s.playbackEnd!,
+          ) ?? null;
       }
+
       if (!segment || segment.playbackStart === null) return;
+
+      if (local >= segment.play.endTime - 0.08) {
+        const segIdx = activeSegments.indexOf(segment);
+        const next = activeSegments[segIdx + 1];
+        if (next) {
+          void seekToPlaybackTime(next.playbackStart!, !video.paused);
+          return;
+        }
+      }
 
       const newPlayback =
         segment.playbackStart + (local - segment.play.startTime);
       setPlaybackTime(newPlayback);
-      persistPlayhead(segment.play.videoClipId, local);
+      setClipLocalTime(local);
+      persistPlayhead(clipId, local);
       if (segment.playIndex !== currentIndexRef.current) {
         currentIndexRef.current = segment.playIndex;
         setSelectedPlayIndex(segment.playIndex);
       }
     };
 
+    const onTimeUpdate = () => syncFromVideo();
+    const onSeeked = () => syncFromVideo();
+
     video.addEventListener("timeupdate", onTimeUpdate);
-    return () => video.removeEventListener("timeupdate", onTimeUpdate);
-  }, [activeSegments, loadedClipUrl, persistPlayhead]);
+    video.addEventListener("seeked", onSeeked);
+    return () => {
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("seeked", onSeeked);
+    };
+  }, [activeSegments, clips, persistPlayhead, seekToPlaybackTime]);
 
   const renumberActivePlays = (updated: PlayDraft[]) => {
     let n = 0;
@@ -237,14 +280,14 @@ export function PlayEditor({
 
   const splitAtCurrentTime = () => {
     const video = videoRef.current;
-    if (!video || !loadedClipUrl) return;
+    const clipId = loadedClipIdRef.current;
+    if (!video || !clipId) return;
 
     const time = video.currentTime;
     const playIndex = plays.findIndex(
       (p) =>
         !p.deletedAt &&
-        p.videoClipId ===
-          clips.find((c) => c.blobUrl === loadedClipUrl)?.id &&
+        p.videoClipId === clipId &&
         time > p.startTime + 0.1 &&
         time < p.endTime - 0.1,
     );
@@ -317,20 +360,74 @@ export function PlayEditor({
   const playheadPercent =
     fullDuration > 0 ? (fullPosition / fullDuration) * 100 : 0;
 
+  const currentSegment =
+    activeSegments.find((s) => s.playIndex === selectedPlayIndex) ??
+    activeSegments[0];
+  const currentClip = currentSegment?.play.videoClip;
+
+  const togglePlay = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      await video.play();
+      setIsPlaying(true);
+    } else {
+      video.pause();
+      setIsPlaying(false);
+    }
+  };
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       <div className="space-y-4">
         <div className="surface-elevated overflow-hidden p-1">
-          <video
-            ref={videoRef}
-            className="aspect-video w-full rounded-xl bg-slate-900"
-            controls
-            playsInline
-            preload="auto"
-          />
+          <div className="relative overflow-hidden rounded-xl bg-slate-900">
+            <video
+              ref={videoRef}
+              className="aspect-video w-full"
+              playsInline
+              preload="auto"
+              controls={false}
+              onClick={() => void togglePlay()}
+            />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3">
+              <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm">
+                <span className="font-medium">
+                  Play {currentSegment?.play.playNumber ?? 1}
+                  {currentClip ? ` · ${currentClip.filename}` : ""}
+                </span>
+                <span className="tabular-nums">
+                  {formatDuration(playbackTime)} / {formatDuration(playbackDuration)}
+                </span>
+              </div>
+              {currentClip && (
+                <p className="mt-1 text-[11px] text-white/70 sm:text-xs">
+                  Clip {formatDuration(clipLocalTime)} /{" "}
+                  {formatDuration(currentClip.duration)}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            className="rounded-xl"
+            onClick={() => void togglePlay()}
+          >
+            {isPlaying ? (
+              <>
+                <Pause className="mr-2 h-4 w-4" />
+                Pause
+              </>
+            ) : (
+              <>
+                <Play className="mr-2 h-4 w-4" />
+                Play
+              </>
+            )}
+          </Button>
           <Button className="rounded-xl" onClick={splitAtCurrentTime}>
             <Scissors className="mr-2 h-4 w-4" />
             Split at playhead

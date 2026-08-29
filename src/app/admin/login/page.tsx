@@ -1,25 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { PageShell } from "@/components/page-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Shield } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const inputClassName =
+  "h-11 w-full min-w-0 rounded-xl border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm";
 
 export default function AdminLoginPage() {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
+    const form = formRef.current;
+    if (!form) return;
+
+    const data = new FormData(form);
+    const trimmedUsername = String(data.get("username") ?? "").trim();
+    const trimmedPassword = String(data.get("password") ?? "").trim();
+
     setLoading(true);
     setError("");
-
-    const trimmedUsername = username.trim();
-    const trimmedPassword = password.trim();
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -61,6 +67,7 @@ export default function AdminLoginPage() {
           </CardHeader>
           <CardContent>
             <form
+              ref={formRef}
               className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
@@ -69,23 +76,23 @@ export default function AdminLoginPage() {
             >
               <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
-                <Input
+                <input
                   id="username"
-                  className="h-11 rounded-xl"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  name="username"
+                  className={inputClassName}
                   autoComplete="username"
+                  required
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
+                <input
                   id="password"
+                  name="password"
                   type="password"
-                  className="h-11 rounded-xl"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  className={inputClassName}
                   autoComplete="current-password"
+                  required
                 />
               </div>
               {error && (
@@ -95,8 +102,8 @@ export default function AdminLoginPage() {
               )}
               <Button
                 type="submit"
-                className="h-11 w-full rounded-xl"
-                disabled={loading || !username.trim() || !password.trim()}
+                className={cn("h-11 w-full rounded-xl")}
+                disabled={loading}
               >
                 {loading ? "Signing in..." : "Sign in"}
               </Button>

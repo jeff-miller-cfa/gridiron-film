@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { fetchFile } from "@ffmpeg/util";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { getFfmpeg } from "@/lib/ffmpeg-client";
 import type { PlayWithClip } from "@/types";
 import { Download } from "lucide-react";
 
@@ -26,15 +26,9 @@ export function ExportVideoButton({ plays, gameTitle }: ExportVideoButtonProps) 
     setStatus("Loading video processor...");
 
     try {
-      const ffmpeg = new FFmpeg();
+      const ffmpeg = await getFfmpeg();
       ffmpeg.on("progress", ({ progress: p }) => {
         setProgress(Math.round(p * 100));
-      });
-
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
       });
 
       const segmentFiles: string[] = [];

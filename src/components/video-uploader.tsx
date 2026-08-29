@@ -2,8 +2,14 @@
 
 import { useState } from "react";
 import { upload } from "@vercel/blob/client";
+import type { FFmpeg } from "@ffmpeg/ffmpeg";
 import { buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  compressVideoForWeb,
+  shouldCompressVideo,
+} from "@/lib/compress-video";
+import { getFfmpeg } from "@/lib/ffmpeg-client";
 import { extractVideoCaptureTime, getVideoDuration } from "@/lib/video";
 import { Upload } from "lucide-react";
 
@@ -19,6 +25,11 @@ type VideoUploaderProps = {
   onUploaded: () => void;
 };
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -31,6 +42,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     setProgress(0);
     setStatus("Preparing uploads...");
 
+    let ffmpeg: FFmpeg | null = null;
+
     try {
       const clips: UploadedClip[] = [];
       const fileArray = Array.from(files);
@@ -38,29 +51,56 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
 
       for (let i = 0; i < fileArray.length; i++) {
         const file = fileArray[i];
-        setStatus(`Uploading ${file.name} (${i + 1}/${total})...`);
+        const fileBaseProgress = i / total;
+        const fileSpan = 1 / total;
+
+        let uploadFile = file;
+
+        if (shouldCompressVideo(file)) {
+          setStatus(
+            `Compressing ${file.name} (${i + 1}/${total}) for faster streaming...`,
+          );
+
+          if (!ffmpeg) {
+            setStatus("Loading video processor...");
+            ffmpeg = await getFfmpeg();
+          }
+
+          uploadFile = await compressVideoForWeb(file, {
+            ffmpeg,
+            onProgress: (ratio) => {
+              setProgress((fileBaseProgress + ratio * 0.65 * fileSpan) * 100);
+            },
+          });
+
+          setStatus(
+            `Compressed ${file.name}: ${formatSize(file.size)} → ${formatSize(uploadFile.size)}`,
+          );
+        } else {
+          setStatus(`Preparing ${file.name} (${i + 1}/${total})...`);
+        }
 
         const [capturedAt, duration] = await Promise.all([
           extractVideoCaptureTime(file),
-          getVideoDuration(file),
+          getVideoDuration(uploadFile),
         ]);
 
-        const blob = await upload(
-          `games/${gameId}/${file.name}`,
-          file,
-          {
-            access: "public",
-            handleUploadUrl: "/api/upload",
-            onUploadProgress: (p) => {
-              const fileProgress = (p.percentage ?? 0) / 100;
-              setProgress(((i + fileProgress) / total) * 100);
-            },
+        setStatus(`Uploading ${uploadFile.name} (${i + 1}/${total})...`);
+
+        const blob = await upload(`games/${gameId}/${uploadFile.name}`, uploadFile, {
+          access: "public",
+          handleUploadUrl: "/api/upload",
+          onUploadProgress: (p) => {
+            const uploadRatio = (p.percentage ?? 0) / 100;
+            const compressWeight = shouldCompressVideo(file) ? 0.65 : 0;
+            const combined = compressWeight + uploadRatio * (1 - compressWeight);
+            setProgress((fileBaseProgress + combined * fileSpan) * 100);
           },
-        );
+        });
 
         clips.push({
           blobUrl: blob.url,
-          filename: file.name,
+          filename: uploadFile.name,
           capturedAt: capturedAt.toISOString(),
           duration,
         });
@@ -95,8 +135,9 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
           Upload game footage
         </p>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-          Select multiple clips — they&apos;ll be ordered by capture time from
-          video metadata.
+          Select multiple clips — they&apos;ll be ordered by capture time. Large
+          or iPhone MOV files are compressed to web-friendly MP4 before upload
+          for smoother playback.
         </p>
       </div>
 

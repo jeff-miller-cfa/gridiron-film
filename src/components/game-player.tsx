@@ -15,11 +15,14 @@ import { formatDuration } from "@/lib/video";
 import {
   buildTimelines,
   clipTimeToPlaybackTime,
+  findActiveSegmentAtClipTime,
   fullPositionToPlaybackTime,
   fullPositionToSegment,
+  localClipTimeToPlaybackTime,
   playbackToFullPosition,
   playIndexToPlaybackTime,
   playbackTimeToClipTime,
+  resolveClipIdFromVideo,
   segmentLocalTime,
 } from "@/lib/player-timeline";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
@@ -48,7 +51,17 @@ export function GamePlayer({
   const isPlayingRef = useRef(false);
   const currentIndexRef = useRef(0);
   const initializedRef = useRef(false);
+  const loadedClipIdRef = useRef<string | null>(null);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
+
+  const clipSources = useMemo(
+    () =>
+      plays
+        .map((play) => play.videoClip)
+        .filter((clip): clip is NonNullable<typeof clip> => Boolean(clip))
+        .map((clip) => ({ id: clip.id, blobUrl: clip.blobUrl })),
+    [plays],
+  );
 
   const { segments, fullDuration, playbackDuration, activeSegments } = useMemo(
     () => buildTimelines(plays),
@@ -90,6 +103,8 @@ export function GamePlayer({
       setPlaybackTime(clamped);
       setCurrentIndex(segment.playIndex);
       currentIndexRef.current = segment.playIndex;
+      loadedClipIdRef.current = segment.play.videoClipId;
+      setLoadedClipUrl(clipUrl);
 
       const clipTime = playbackTimeToClipTime(clamped, segments);
       if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
@@ -111,7 +126,6 @@ export function GamePlayer({
         if (loadedClipUrl !== clipUrl) {
           video.src = clipUrl;
           video.load();
-          setLoadedClipUrl(clipUrl);
           video.addEventListener(
             "loadedmetadata",
             () => {
@@ -183,24 +197,38 @@ export function GamePlayer({
     const video = videoRef.current;
     if (!video || activeSegments.length === 0) return;
 
-    const onTimeUpdate = () => {
+    const syncFromVideo = () => {
       if (seekingRef.current) return;
 
       const local = video.currentTime;
-      const clipUrl = loadedClipUrl ?? video.currentSrc;
+      const clipId =
+        loadedClipIdRef.current ?? resolveClipIdFromVideo(video, clipSources);
+      if (!clipId) return;
 
-      let segment = activeSegments.find(
-        (s) =>
-          s.play.videoClip?.blobUrl === clipUrl &&
-          local >= s.play.startTime - 0.05 &&
-          local < s.play.endTime,
+      loadedClipIdRef.current = clipId;
+
+      let segment = findActiveSegmentAtClipTime(
+        clipId,
+        local,
+        activeSegments,
       );
 
       if (!segment) {
-        segment = activeSegments.find(
-          (s) => s.playIndex === currentIndexRef.current,
+        const playback = localClipTimeToPlaybackTime(
+          clipId,
+          local,
+          activeSegments,
         );
+        if (playback === null) return;
+        segment =
+          activeSegments.find(
+            (s) =>
+              s.playbackStart !== null &&
+              playback >= s.playbackStart &&
+              playback < s.playbackEnd!,
+          ) ?? null;
       }
+
       if (!segment || segment.playbackStart === null) return;
 
       if (local >= segment.play.endTime - 0.08) {
@@ -208,27 +236,34 @@ export function GamePlayer({
         const next = activeSegments[segIdx + 1];
         if (next) {
           void seekToPlaybackTime(next.playbackStart!, isPlayingRef.current);
-        } else {
-          video.pause();
-          setIsPlaying(false);
-          setPlaybackTime(segment.playbackEnd!);
+          return;
         }
+        video.pause();
+        setIsPlaying(false);
+        setPlaybackTime(segment.playbackEnd!);
         return;
       }
 
       const newPlayback =
         segment.playbackStart + (local - segment.play.startTime);
       setPlaybackTime(newPlayback);
-      persistPlayhead(segment.play.videoClipId, local);
+      persistPlayhead(clipId, local);
       if (segment.playIndex !== currentIndexRef.current) {
         currentIndexRef.current = segment.playIndex;
         setCurrentIndex(segment.playIndex);
       }
     };
 
+    const onTimeUpdate = () => syncFromVideo();
+    const onSeeked = () => syncFromVideo();
+
     video.addEventListener("timeupdate", onTimeUpdate);
-    return () => video.removeEventListener("timeupdate", onTimeUpdate);
-  }, [activeSegments, seekToPlaybackTime, loadedClipUrl, persistPlayhead]);
+    video.addEventListener("seeked", onSeeked);
+    return () => {
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("seeked", onSeeked);
+    };
+  }, [activeSegments, clipSources, persistPlayhead, seekToPlaybackTime]);
 
   const togglePlay = async () => {
     const video = videoRef.current;
