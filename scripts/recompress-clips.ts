@@ -23,22 +23,6 @@ import * as schema from "../src/db/schema";
 
 const execFileAsync = promisify(execFile);
 
-const COMPRESS_ABOVE_BYTES = 25 * 1024 * 1024;
-
-function clipLikelyNeedsCompression(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  return (
-    lower.endsWith(".mov") ||
-    lower.endsWith(".m4v") ||
-    lower.endsWith(".hevc") ||
-    !lower.endsWith(".mp4")
-  );
-}
-
-function shouldCompressFile(filename: string, sizeBytes: number): boolean {
-  return clipLikelyNeedsCompression(filename) || sizeBytes > COMPRESS_ABOVE_BYTES;
-}
-
 function outputFilename(filename: string): string {
   const base = filename.replace(/\.[^.]+$/, "") || "clip";
   return `${base}.mp4`;
@@ -154,12 +138,6 @@ async function main() {
       console.log(`\n→ ${clip.filename}`);
       await downloadFile(clip.blobUrl, inputPath);
       const inputStats = await stat(inputPath);
-
-      if (!shouldCompressFile(clip.filename, inputStats.size)) {
-        console.log(`  skipped (already web-friendly, ${formatSize(inputStats.size)})`);
-        skipped += 1;
-        continue;
-      }
 
       if (dryRun) {
         console.log(

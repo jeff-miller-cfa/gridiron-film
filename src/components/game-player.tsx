@@ -14,13 +14,8 @@ import {
 import { formatDuration } from "@/lib/video";
 import {
   buildTimelines,
-  clipTimeToPlaybackTime,
   findActiveSegmentAtGameTime,
-  fullPositionToPlaybackTime,
   gameTimeToPlaybackTime,
-  isGapSegment,
-  isPlaySegment,
-  playbackToFullPosition,
   playIndexToPlaybackTime,
   playbackTimeToClipTime,
   resolveClipIdFromVideo,
@@ -66,7 +61,7 @@ export function GamePlayer({
     [clips],
   );
 
-  const { segments, fullDuration, playbackDuration, playSegments } = useMemo(
+  const { playbackDuration, playSegments } = useMemo(
     () => buildTimelines(clips, plays),
     [clips, plays],
   );
@@ -75,7 +70,6 @@ export function GamePlayer({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
-  const fullPosition = playbackToFullPosition(playbackTime, playSegments);
   const currentSegment =
     playSegments.find((s) => s.playIndex === currentIndex) ?? playSegments[0];
   const currentPlay = currentSegment?.play;
@@ -188,20 +182,6 @@ export function GamePlayer({
     [playSegments, seekToPlaybackTime],
   );
 
-  const seekToFullPosition = useCallback(
-    (position: number, autoplay = false) => {
-      const playback = fullPositionToPlaybackTime(
-        position,
-        segments,
-        playSegments,
-      );
-      if (playback !== null) {
-        void seekToPlaybackTime(playback, autoplay);
-      }
-    },
-    [segments, playSegments, seekToPlaybackTime],
-  );
-
   useEffect(() => {
     if (playSegments.length === 0 || initializedRef.current) return;
     initializedRef.current = true;
@@ -289,10 +269,10 @@ export function GamePlayer({
   const { playheadPercent, onTimelinePointerDown, onPlayheadPointerDown } =
     useTimelineScrub({
       timelineRef,
-      fullDuration,
-      fullPosition,
+      fullDuration: playbackDuration,
+      fullPosition: playbackTime,
       onSeek: (position) => {
-        void seekToFullPosition(position, isPlaying);
+        void seekToPlaybackTime(position, isPlaying);
       },
       onScrubStart: () => {
         const video = videoRef.current;
@@ -308,7 +288,7 @@ export function GamePlayer({
     });
 
   const playList = (
-    <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto md:max-h-[calc(100vh-280px)]">
+    <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto max-lg:landscape:max-h-none max-lg:landscape:flex-1 md:max-h-[calc(100vh-280px)]">
       {playSegments.map((segment) => {
         const index = segment.playIndex;
         const play = segment.play;
@@ -363,21 +343,21 @@ export function GamePlayer({
     currentSegment?.playNumber ?? currentIndex + 1;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
-      <div className="space-y-4">
-        <div className="surface-elevated overflow-hidden p-1">
-          <div className="relative overflow-hidden rounded-xl bg-slate-900">
+    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,36%)] max-lg:landscape:items-stretch max-lg:landscape:gap-3 lg:grid-cols-[1fr_340px]">
+      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
+        <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
+          <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
             <video
               ref={videoRef}
-              className="aspect-video w-full"
+              className="aspect-video w-full max-lg:landscape:aspect-auto max-lg:landscape:h-full max-lg:landscape:object-contain"
               playsInline
               preload="auto"
               controls={false}
               onClick={togglePlay}
             />
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-primary/95 via-primary/70 to-transparent px-5 py-4">
+            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-primary/95 via-primary/70 to-transparent px-5 py-4 max-lg:landscape:px-3 max-lg:landscape:py-2">
               <div className="flex items-center justify-between gap-2 text-sm text-white">
-                <span className="font-heading text-lg font-bold">
+                <span className="font-heading text-lg font-bold max-lg:landscape:text-base">
                   Play {currentPlayNumber}
                 </span>
                 {currentPlay?.offenseTeam && (
@@ -387,13 +367,15 @@ export function GamePlayer({
                 )}
               </div>
               {currentPlay?.notes && (
-                <p className="mt-1 text-sm text-white/85">{currentPlay.notes}</p>
+                <p className="mt-1 line-clamp-1 text-sm text-white/85 max-lg:landscape:text-xs">
+                  {currentPlay.notes}
+                </p>
               )}
             </div>
           </div>
         </div>
 
-        <div className="surface-card space-y-2 p-4">
+        <div className="surface-card space-y-2 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
           <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
             <span>{formatDuration(playbackTime)}</span>
             <span>{formatDuration(playbackDuration)}</span>
@@ -403,10 +385,10 @@ export function GamePlayer({
             role="slider"
             aria-label="Game timeline"
             aria-valuemin={0}
-            aria-valuemax={fullDuration}
-            aria-valuenow={fullPosition}
+            aria-valuemax={playbackDuration}
+            aria-valuenow={playbackTime}
             tabIndex={0}
-            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            className="relative h-12 max-lg:landscape:h-10 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
             onPointerDown={onTimelinePointerDown}
             onKeyDown={(e) => {
               if (e.key === "ArrowRight") {
@@ -420,21 +402,15 @@ export function GamePlayer({
               }
             }}
           >
-            {segments.map((segment) => {
-              const left = (segment.globalStart / fullDuration) * 100;
-              const width = (segment.duration / fullDuration) * 100;
-
-              if (isGapSegment(segment)) {
-                return (
-                  <div
-                    key={`gap-${segment.globalStart}-${segment.globalEnd}`}
-                    className="absolute top-0 h-full border-r border-white/20 bg-muted-foreground/20"
-                    style={{ left: `${left}%`, width: `${width}%` }}
-                  />
-                );
-              }
-
-              if (!isPlaySegment(segment)) return null;
+            {playSegments.map((segment) => {
+              const left =
+                playbackDuration > 0
+                  ? (segment.playbackStart / playbackDuration) * 100
+                  : 0;
+              const width =
+                playbackDuration > 0
+                  ? (segment.duration / playbackDuration) * 100
+                  : 0;
 
               const isActive = segment.playIndex === currentIndex;
               const offenseTone = offenseTimelineTone(
@@ -474,12 +450,12 @@ export function GamePlayer({
               onPointerDown={onPlayheadPointerDown}
             />
           </div>
-          <p className="text-center text-xs text-muted-foreground">
+          <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
             Drag the timeline or playhead to scrub
           </p>
         </div>
 
-        <div className="surface-card flex items-center justify-between gap-3 p-4">
+        <div className="surface-card flex items-center justify-between gap-3 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -540,7 +516,7 @@ export function GamePlayer({
           </p>
         </div>
 
-        <div className="lg:hidden">
+        <div className="hidden max-lg:portrait:block">
           <Sheet>
             <SheetTrigger
               className={buttonVariants({
@@ -563,11 +539,15 @@ export function GamePlayer({
         </div>
       </div>
 
-      <Card className="hidden surface-card lg:block">
-        <CardHeader className="border-b border-border/60 pb-4">
-          <CardTitle className="font-heading text-lg">Play list</CardTitle>
+      <Card className="surface-card hidden max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col lg:flex">
+        <CardHeader className="border-b border-border/60 pb-4 max-lg:landscape:shrink-0 max-lg:landscape:py-3 max-lg:landscape:pb-2">
+          <CardTitle className="font-heading text-lg max-lg:landscape:text-base">
+            Play list
+          </CardTitle>
         </CardHeader>
-        <CardContent className="p-4">{playList}</CardContent>
+        <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 max-lg:landscape:p-3">
+          {playList}
+        </CardContent>
       </Card>
     </div>
   );

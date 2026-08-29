@@ -20,17 +20,17 @@ export default async function GameWatchPage({ params }: PageProps) {
 
   return (
     <PageShell>
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
-        <div className="mb-8 surface-card p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+      <main className="mx-auto max-w-6xl px-4 py-6 max-lg:landscape:px-3 max-lg:landscape:py-3 sm:px-6 sm:py-8">
+        <div className="surface-card mb-8 p-6 max-lg:landscape:mb-3 max-lg:landscape:p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent max-lg:landscape:hidden">
             Now watching
           </p>
-          <h1 className="mt-2 font-heading text-3xl font-bold tracking-tight sm:text-4xl">
+          <h1 className="mt-2 font-heading text-3xl font-bold tracking-tight max-lg:landscape:mt-0 max-lg:landscape:truncate max-lg:landscape:text-xl sm:text-4xl">
             <span className="text-muted-foreground">{game.awayTeam}</span>
             <span className="mx-3 font-normal text-border">@</span>
             {game.homeTeam}
           </h1>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div className="mt-4 flex flex-wrap items-center gap-3 max-lg:landscape:hidden">
             <Badge variant="secondary" className="gap-1.5 bg-primary/10 text-primary">
               <MapPin className="h-3 w-3" />
               {game.stadium}

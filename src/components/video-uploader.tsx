@@ -5,10 +5,7 @@ import { upload } from "@vercel/blob/client";
 import { buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { mapWithConcurrency } from "@/lib/async-pool";
-import {
-  compressVideoForWeb,
-  shouldCompressVideo,
-} from "@/lib/compress-video";
+import { compressVideoForWeb } from "@/lib/compress-video";
 import { getUploadFfmpegPool } from "@/lib/ffmpeg-client";
 import {
   captureTimeKey,
@@ -183,46 +180,42 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
       return { kind: "skipped" };
     }
 
+    updateItem(itemId, {
+      status: "compressing",
+      progress: 0,
+      message: "Waiting for video processor...",
+    });
+
+    const ffmpeg = await ffmpegPoolRef.current.acquire();
+    const jobId = crypto.randomUUID();
     let uploadFile = file;
-    const needsCompression = shouldCompressVideo(file);
 
-    if (needsCompression) {
+    try {
       updateItem(itemId, {
-        status: "compressing",
-        progress: 0,
-        message: "Waiting for video processor...",
+        message: "Compressing for faster streaming...",
       });
 
-      const ffmpeg = await ffmpegPoolRef.current.acquire();
-      const jobId = crypto.randomUUID();
-
-      try {
-        updateItem(itemId, {
-          message: "Compressing for faster streaming...",
-        });
-
-        uploadFile = await compressVideoForWeb(file, {
-          ffmpeg,
-          jobId,
-          onProgress: (ratio) => {
-            updateItem(itemId, {
-              progress: Math.round(ratio * 70),
-            });
-          },
-        });
-      } finally {
-        ffmpegPoolRef.current.release(ffmpeg);
-      }
-
-      updateItem(itemId, {
-        progress: 70,
-        message: `Compressed to ${formatSize(uploadFile.size)}`,
+      uploadFile = await compressVideoForWeb(file, {
+        ffmpeg,
+        jobId,
+        onProgress: (ratio) => {
+          updateItem(itemId, {
+            progress: Math.round(ratio * 70),
+          });
+        },
       });
+    } finally {
+      ffmpegPoolRef.current.release(ffmpeg);
     }
 
     updateItem(itemId, {
+      progress: 70,
+      message: `Compressed to ${formatSize(uploadFile.size)}`,
+    });
+
+    updateItem(itemId, {
       status: "preparing",
-      progress: needsCompression ? 72 : 5,
+      progress: 72,
       message: "Reading clip metadata...",
     });
 
@@ -230,7 +223,7 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
 
     updateItem(itemId, {
       status: "uploading",
-      progress: needsCompression ? 75 : 10,
+      progress: 75,
       message: "Uploading...",
     });
 
@@ -239,10 +232,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
       handleUploadUrl: "/api/upload",
       onUploadProgress: (progressEvent) => {
         const uploadRatio = (progressEvent.percentage ?? 0) / 100;
-        const base = needsCompression ? 75 : 10;
-        const span = needsCompression ? 25 : 90;
         updateItem(itemId, {
-          progress: Math.round(base + uploadRatio * span),
+          progress: Math.round(75 + uploadRatio * 25),
         });
       },
     });
@@ -445,8 +436,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         </p>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
           Drag and drop videos here, or choose files. Clips are ordered by
-          capture time and duplicates are skipped automatically. Large or iPhone
-          MOV files are compressed to web-friendly MP4 before upload.
+          capture time, duplicates are skipped automatically, and every file is
+          compressed to web-friendly MP4 before upload.
         </p>
       </div>
 

@@ -459,20 +459,20 @@ export function PlayEditor({
   const timelineSegments = showGapsOnTimeline ? segments : playSegments;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-      <div className="space-y-4">
-        <div className="surface-elevated overflow-hidden p-1">
-          <div className="relative overflow-hidden rounded-xl bg-slate-900">
+    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:items-stretch max-lg:landscape:gap-3 lg:grid-cols-[1fr_380px]">
+      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
+        <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
+          <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
             <video
               ref={videoRef}
-              className="aspect-video w-full"
+              className="aspect-video w-full max-lg:landscape:aspect-auto max-lg:landscape:h-full max-lg:landscape:object-contain"
               playsInline
               preload="auto"
               controls={false}
               onClick={() => void togglePlay()}
             />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3">
-              <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3 max-lg:landscape:px-3 max-lg:landscape:py-2">
+              <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm max-lg:landscape:text-xs">
                 <span className="font-medium">
                   Play {currentSegment?.playNumber ?? 1}
                   {currentClip ? ` · ${currentClip.filename}` : ""}
@@ -482,7 +482,7 @@ export function PlayEditor({
                 </span>
               </div>
               {currentClip && (
-                <p className="mt-1 text-[11px] text-white/70 sm:text-xs">
+                <p className="mt-1 text-[11px] text-white/70 sm:text-xs max-lg:landscape:hidden">
                   Clip {formatDuration(clipLocalTime)} /{" "}
                   {formatDuration(currentClip.duration)} · Game{" "}
                   {formatDuration(fullPosition)}
@@ -492,10 +492,10 @@ export function PlayEditor({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 max-lg:landscape:shrink-0">
           <Button
             variant="outline"
-            className="rounded-xl"
+            className="rounded-xl max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
             onClick={() => void togglePlay()}
           >
             {isPlaying ? (
@@ -510,13 +510,17 @@ export function PlayEditor({
               </>
             )}
           </Button>
-          <Button className="rounded-xl" onClick={splitAtCurrentTime}>
-            <Scissors className="mr-2 h-4 w-4" />
-            Split at playhead
+          <Button
+            className="rounded-xl max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
+            onClick={splitAtCurrentTime}
+          >
+            <Scissors className="mr-2 h-4 w-4 max-lg:landscape:mr-1.5 max-lg:landscape:h-3.5 max-lg:landscape:w-3.5" />
+            <span className="max-lg:landscape:hidden">Split at playhead</span>
+            <span className="hidden max-lg:landscape:inline">Split</span>
           </Button>
         </div>
 
-        <div className="surface-card space-y-2 p-4">
+        <div className="surface-card space-y-2 p-4 max-lg:landscape:shrink-0 max-lg:landscape:p-3">
           <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
             <span>{formatDuration(playbackTime)}</span>
             <div className="flex items-center gap-2">
@@ -549,7 +553,7 @@ export function PlayEditor({
             role="slider"
             aria-label="Stitched game timeline"
             tabIndex={0}
-            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+            className="relative h-12 max-lg:landscape:h-10 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
             onPointerDown={onTimelinePointerDown}
           >
             {timelineSegments.map((segment) => {
@@ -624,7 +628,7 @@ export function PlayEditor({
               onPointerDown={onPlayheadPointerDown}
             />
           </div>
-          <p className="text-center text-xs text-muted-foreground">
+          <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
             Drag the timeline or playhead to scrub — click a play to jump
             {showGapsOnTimeline && gapSegments.length > 0
               ? ", gray segments can be restored"
@@ -633,13 +637,13 @@ export function PlayEditor({
         </div>
       </div>
 
-      <Card className="surface-card">
-        <CardHeader className="border-b border-border/60 py-3">
+      <Card className="surface-card max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-8.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col">
+        <CardHeader className="border-b border-border/60 py-3 max-lg:landscape:shrink-0 max-lg:landscape:py-2">
           <CardTitle className="font-heading text-sm">All plays</CardTitle>
         </CardHeader>
         <CardContent
           ref={playListRef}
-          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3"
+          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3 max-lg:landscape:max-h-none max-lg:landscape:flex-1 max-lg:landscape:min-h-0"
         >
           {sortedPlays.length === 0 && (
             <p className="text-sm text-muted-foreground">No plays yet.</p>
