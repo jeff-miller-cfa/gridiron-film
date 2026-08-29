@@ -10,18 +10,19 @@ import { formatDuration } from "@/lib/video";
 import {
   buildTimelines,
   clipTimeToPlaybackTime,
-  findActiveSegmentAtClipTime,
+  findActiveSegmentAtGameTime,
   fullPositionToPlaybackTime,
   fullPositionToSegment,
+  gameTimeToPlaybackTime,
   gapToPlayGaps,
   isGapSegment,
   isPlaySegment,
-  localClipTimeToPlaybackTime,
   playbackToFullPosition,
   playbackTimeToClipTime,
   resolveClipIdFromVideo,
-  segmentLocalTime,
+  segmentGameTime,
 } from "@/lib/player-timeline";
+import { clipTimeToGameTime, gameTimeToClipTime } from "@/lib/clip-layout";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
 import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
 import { playIdentityKey, sortPlays } from "@/lib/plays";
@@ -29,7 +30,7 @@ import {
   offenseTimelineTone,
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
-import type { PlayDraft, PlayGap, PlayWithClip, VideoClipRecord } from "@/types";
+import type { PlayDraft, PlayGap, PlayRecord, VideoClipRecord } from "@/types";
 import { Eye, EyeOff, Pause, Pencil, Play, RotateCcw, Scissors, StickyNote, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -94,15 +95,7 @@ export function PlayEditor({
   const [selectedPlayId, setSelectedPlayId] = useState<string | null>(null);
   const [notesEditorPlayId, setNotesEditorPlayId] = useState<string | null>(null);
 
-  const orderedClipIds = useMemo(
-    () =>
-      [...clips]
-        .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((clip) => clip.id),
-    [clips],
-  );
-
-  const playsWithClips: PlayWithClip[] = useMemo(
+  const playRecords: PlayRecord[] = useMemo(
     () =>
       plays.map((p) => ({
         ...p,
@@ -112,9 +105,8 @@ export function PlayEditor({
         notes: p.notes ?? null,
         createdAt: "",
         updatedAt: "",
-        videoClip: clips.find((c) => c.id === p.videoClipId),
       })),
-    [plays, clips, gameId],
+    [plays, gameId],
   );
 
   const {
@@ -124,16 +116,17 @@ export function PlayEditor({
     fullDuration,
     playbackDuration,
   } = useMemo(
-    () => buildTimelines(clips, playsWithClips),
-    [clips, playsWithClips],
+    () => buildTimelines(clips, playRecords),
+    [clips, playRecords],
   );
 
-  const sortedPlays = useMemo(
-    () => sortPlays(plays, orderedClipIds),
-    [plays, orderedClipIds],
-  );
+  const sortedPlays = useMemo(() => sortPlays(plays), [plays]);
 
   const fullPosition = playbackToFullPosition(playbackTime, playSegments);
+  const currentClipLocation = useMemo(
+    () => gameTimeToClipTime(fullPosition, clips),
+    [fullPosition, clips],
+  );
   const timelineDuration = showGapsOnTimeline ? fullDuration : playbackDuration;
   const timelinePosition = showGapsOnTimeline ? fullPosition : playbackTime;
 
@@ -143,15 +136,22 @@ export function PlayEditor({
       const segment = playSegments.find(
         (s) => time >= s.playbackStart && time < s.playbackEnd,
       );
-      if (!video || !segment?.play.videoClip) return Promise.resolve();
+      if (!video || !segment) return Promise.resolve();
 
       const clamped = Math.max(
         0,
         Math.min(time, playbackDuration > 0 ? playbackDuration - 0.001 : 0),
       );
-      const localTime = segmentLocalTime(clamped, segment);
-      const clipUrl = segment.play.videoClip.blobUrl;
-      const clipId = segment.play.videoClipId;
+
+      const clipTime = playbackTimeToClipTime(clamped, playSegments, clips);
+      if (!clipTime) return Promise.resolve();
+
+      const clip = clips.find((row) => row.id === clipTime.clipId);
+      if (!clip) return Promise.resolve();
+
+      const localTime = clipTime.time;
+      const clipUrl = clip.blobUrl;
+      const clipId = clipTime.clipId;
       const previousClipId = loadedClipIdRef.current;
       const seekToken = ++seekTokenRef.current;
 
@@ -163,8 +163,7 @@ export function PlayEditor({
       currentPlayIdRef.current = playId;
       loadedClipIdRef.current = clipId;
 
-      const clipTime = playbackTimeToClipTime(clamped, playSegments);
-      if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
+      persistPlayhead(segmentGameTime(clamped, segment));
 
       return new Promise((resolve) => {
         let seekApplied = false;
@@ -227,7 +226,7 @@ export function PlayEditor({
         }
       });
     },
-    [playSegments, playbackDuration, persistPlayhead],
+    [playSegments, playbackDuration, persistPlayhead, clips],
   );
 
   const seekToFullPosition = useCallback(
@@ -294,9 +293,8 @@ export function PlayEditor({
 
     let targetPlayback = 0;
     if (persisted) {
-      const restored = clipTimeToPlaybackTime(
-        persisted.clipId,
-        persisted.time,
+      const restored = gameTimeToPlaybackTime(
+        persisted.gameTime,
         playSegments,
       );
       if (restored !== null) targetPlayback = restored;
@@ -322,24 +320,13 @@ export function PlayEditor({
 
       loadedClipIdRef.current = clipId;
 
-      let segment = findActiveSegmentAtClipTime(clipId, local, playSegments);
+      const gameTime = clipTimeToGameTime(clipId, local, clips);
+      if (gameTime === null) return;
 
-      if (!segment) {
-        const playback = localClipTimeToPlaybackTime(
-          clipId,
-          local,
-          playSegments,
-        );
-        if (playback === null) return;
-        segment =
-          playSegments.find(
-            (s) => playback >= s.playbackStart && playback < s.playbackEnd,
-          ) ?? null;
-      }
-
+      const segment = findActiveSegmentAtGameTime(gameTime, playSegments);
       if (!segment) return;
 
-      if (local >= segment.play.endTime - 0.08) {
+      if (gameTime >= segment.globalEnd - 0.08) {
         const segIdx = playSegments.indexOf(segment);
         const next = playSegments[segIdx + 1];
         if (next) {
@@ -353,10 +340,10 @@ export function PlayEditor({
       }
 
       const newPlayback =
-        segment.playbackStart + (local - segment.play.startTime);
+        segment.playbackStart + (gameTime - segment.globalStart);
       setPlaybackTime(newPlayback);
       setClipLocalTime(local);
-      persistPlayhead(clipId, local);
+      persistPlayhead(gameTime);
 
       const playId = playIdentityKey(segment.play);
       if (playId !== currentPlayIdRef.current) {
@@ -387,16 +374,10 @@ export function PlayEditor({
   };
 
   const splitAtCurrentTime = () => {
-    const video = videoRef.current;
-    const clipId = loadedClipIdRef.current;
-    if (!video || !clipId) return;
-
-    const time = video.currentTime;
+    const gameTime = fullPosition;
     const playIndex = plays.findIndex(
       (p) =>
-        p.videoClipId === clipId &&
-        time > p.startTime + 0.1 &&
-        time < p.endTime - 0.1,
+        gameTime > p.startTime + 0.1 && gameTime < p.endTime - 0.1,
     );
 
     if (playIndex === -1) return;
@@ -404,15 +385,14 @@ export function PlayEditor({
     const play = plays[playIndex];
     const newPlay: PlayDraft = {
       clientKey: crypto.randomUUID(),
-      videoClipId: play.videoClipId,
-      startTime: time,
+      startTime: gameTime,
       endTime: play.endTime,
       offenseTeam: play.offenseTeam,
       notes: "",
     };
 
     const updated = plays.map((p, i) =>
-      i === playIndex ? { ...p, endTime: time } : p,
+      i === playIndex ? { ...p, endTime: gameTime } : p,
     );
     updated.push(newPlay);
     updatePlays(updated);
@@ -462,7 +442,7 @@ export function PlayEditor({
   const currentSegment =
     playSegments.find((s) => playIdentityKey(s.play) === selectedPlayId) ??
     playSegments[0];
-  const currentClip = currentSegment?.play.videoClip;
+  const currentClip = currentClipLocation?.clip;
 
   const togglePlay = async () => {
     const video = videoRef.current;
@@ -504,7 +484,8 @@ export function PlayEditor({
               {currentClip && (
                 <p className="mt-1 text-[11px] text-white/70 sm:text-xs">
                   Clip {formatDuration(clipLocalTime)} /{" "}
-                  {formatDuration(currentClip.duration)}
+                  {formatDuration(currentClip.duration)} · Game{" "}
+                  {formatDuration(fullPosition)}
                 </p>
               )}
             </div>

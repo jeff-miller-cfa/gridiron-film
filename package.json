@@ -11,6 +11,7 @@
     "db:studio": "drizzle-kit studio",
     "recompress-clips": "dotenv -e .env.local -- npx tsx scripts/recompress-clips.ts",
     "reset-plays": "dotenv -e .env.local -- npx tsx scripts/reset-plays.ts",
+    "migrate-plays": "dotenv -e .env.local -- npx tsx scripts/migrate-plays-to-game-timeline.ts",
     "postinstall": "node scripts/copy-ffmpeg-core.js"
   },
   "dependencies": {

@@ -42,9 +42,6 @@ export const plays = pgTable("plays", {
   gameId: uuid("game_id")
     .notNull()
     .references(() => games.id, { onDelete: "cascade" }),
-  videoClipId: uuid("video_clip_id")
-    .notNull()
-    .references(() => videoClips.id, { onDelete: "cascade" }),
   startTime: real("start_time").notNull().default(0),
   endTime: real("end_time").notNull(),
   offenseTeam: text("offense_team"),
@@ -62,22 +59,17 @@ export const gamesRelations = relations(games, ({ many }) => ({
   plays: many(plays),
 }));
 
-export const videoClipsRelations = relations(videoClips, ({ one, many }) => ({
+export const videoClipsRelations = relations(videoClips, ({ one }) => ({
   game: one(games, {
     fields: [videoClips.gameId],
     references: [games.id],
   }),
-  plays: many(plays),
 }));
 
 export const playsRelations = relations(plays, ({ one }) => ({
   game: one(games, {
     fields: [plays.gameId],
     references: [games.id],
-  }),
-  videoClip: one(videoClips, {
-    fields: [plays.videoClipId],
-    references: [videoClips.id],
   }),
 }));
 

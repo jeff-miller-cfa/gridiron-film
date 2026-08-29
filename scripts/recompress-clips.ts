@@ -184,6 +184,8 @@ async function main() {
         contentType: "video/mp4",
       });
 
+      const oldDuration = clip.duration;
+
       await db
         .update(schema.videoClips)
         .set({
@@ -193,16 +195,54 @@ async function main() {
         })
         .where(eq(schema.videoClips.id, clip.id));
 
-      const clipPlays = await db.query.plays.findMany({
-        where: eq(schema.plays.videoClipId, clip.id),
+      const gameClips = await db.query.videoClips.findMany({
+        where: eq(schema.videoClips.gameId, clip.gameId),
+        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
       });
 
-      for (const play of clipPlays) {
-        if (play.endTime > duration) {
+      let gameStart = 0;
+      for (const row of gameClips) {
+        if (row.id === clip.id) break;
+        gameStart += row.duration;
+      }
+
+      const oldClipEnd = gameStart + oldDuration;
+      const newClipEnd = gameStart + duration;
+      const delta = duration - oldDuration;
+
+      const gamePlays = await db.query.plays.findMany({
+        where: eq(schema.plays.gameId, clip.gameId),
+      });
+
+      for (const play of gamePlays) {
+        let nextStart = play.startTime;
+        let nextEnd = play.endTime;
+
+        if (nextEnd <= gameStart) {
+          continue;
+        }
+
+        if (nextStart >= oldClipEnd) {
+          nextStart += delta;
+          nextEnd += delta;
+        } else if (nextStart >= gameStart && nextEnd <= oldClipEnd) {
+          nextEnd = Math.min(nextEnd, newClipEnd);
+        } else if (nextStart < gameStart && nextEnd > oldClipEnd) {
+          nextEnd += delta;
+        } else if (nextStart >= gameStart && nextStart < oldClipEnd && nextEnd > oldClipEnd) {
+          nextEnd += delta;
+        } else if (nextStart < gameStart && nextEnd > gameStart) {
+          nextEnd = Math.min(nextEnd, newClipEnd);
+        }
+
+        nextEnd = Math.max(nextStart, nextEnd);
+
+        if (nextStart !== play.startTime || nextEnd !== play.endTime) {
           await db
             .update(schema.plays)
             .set({
-              endTime: Math.max(play.startTime, duration),
+              startTime: nextStart,
+              endTime: nextEnd,
               updatedAt: new Date(),
             })
             .where(eq(schema.plays.id, play.id));

@@ -4,14 +4,27 @@ import { useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 import { buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { mapWithConcurrency } from "@/lib/async-pool";
 import {
   compressVideoForWeb,
   shouldCompressVideo,
 } from "@/lib/compress-video";
 import { getUploadFfmpegPool } from "@/lib/ffmpeg-client";
-import { extractVideoCaptureTime, getVideoDuration } from "@/lib/video";
+import {
+  captureTimeKey,
+  extractVideoCaptureTime,
+  getVideoDuration,
+} from "@/lib/video";
 import { cn } from "@/lib/utils";
-import { CheckCircle2, CircleAlert, Loader2, Upload } from "lucide-react";
+import {
+  CheckCircle2,
+  CircleAlert,
+  Loader2,
+  MinusCircle,
+  Upload,
+} from "lucide-react";
+
+const MAX_UPLOAD_CONCURRENCY = 4;
 
 type UploadedClip = {
   blobUrl: string;
@@ -20,12 +33,17 @@ type UploadedClip = {
   duration: number;
 };
 
+type ExistingClip = {
+  capturedAt: string;
+};
+
 type UploadItemStatus =
   | "queued"
   | "compressing"
   | "preparing"
   | "uploading"
   | "done"
+  | "skipped"
   | "error";
 
 type UploadItem = {
@@ -40,6 +58,28 @@ type VideoUploaderProps = {
   gameId: string;
   onUploaded: () => void;
 };
+
+type ProcessClipResult =
+  | { kind: "uploaded"; clip: UploadedClip }
+  | { kind: "skipped" }
+  | { kind: "error"; error: unknown };
+
+class CaptureTimeRegistry {
+  private readonly keys = new Set<string>();
+
+  constructor(existing: ExistingClip[]) {
+    for (const clip of existing) {
+      this.keys.add(captureTimeKey(clip.capturedAt));
+    }
+  }
+
+  reserve(capturedAt: Date): boolean {
+    const key = captureTimeKey(capturedAt);
+    if (this.keys.has(key)) return false;
+    this.keys.add(key);
+    return true;
+  }
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -78,6 +118,8 @@ function statusLabel(status: UploadItemStatus): string {
       return "Uploading";
     case "done":
       return "Done";
+    case "skipped":
+      return "Skipped";
     case "error":
       return "Failed";
   }
@@ -90,11 +132,16 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const ffmpegPoolRef = useRef(getUploadFfmpegPool());
+  const captureRegistryRef = useRef<CaptureTimeRegistry | null>(null);
+  const registryLockRef = useRef<Promise<void>>(Promise.resolve());
 
   const hasActiveUpload =
     isBusy ||
     uploadItems.some(
-      (item) => item.status !== "done" && item.status !== "error",
+      (item) =>
+        item.status !== "done" &&
+        item.status !== "skipped" &&
+        item.status !== "error",
     );
 
   const updateItem = (id: string, patch: Partial<UploadItem>) => {
@@ -103,10 +150,39 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     );
   };
 
+  const reserveCaptureTime = async (capturedAt: Date): Promise<boolean> => {
+    let reserved = false;
+
+    registryLockRef.current = registryLockRef.current.then(() => {
+      reserved = captureRegistryRef.current?.reserve(capturedAt) ?? false;
+    });
+
+    await registryLockRef.current;
+    return reserved;
+  };
+
   const processClip = async (
     file: File,
     itemId: string,
-  ): Promise<UploadedClip> => {
+  ): Promise<ProcessClipResult> => {
+    updateItem(itemId, {
+      status: "preparing",
+      progress: 2,
+      message: "Checking capture time...",
+    });
+
+    const capturedAt = await extractVideoCaptureTime(file);
+    const reserved = await reserveCaptureTime(capturedAt);
+
+    if (!reserved) {
+      updateItem(itemId, {
+        status: "skipped",
+        progress: 100,
+        message: "Already uploaded (matching capture time)",
+      });
+      return { kind: "skipped" };
+    }
+
     let uploadFile = file;
     const needsCompression = shouldCompressVideo(file);
 
@@ -150,10 +226,7 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
       message: "Reading clip metadata...",
     });
 
-    const [capturedAt, duration] = await Promise.all([
-      extractVideoCaptureTime(file),
-      getVideoDuration(uploadFile),
-    ]);
+    const duration = await getVideoDuration(uploadFile);
 
     updateItem(itemId, {
       status: "uploading",
@@ -181,10 +254,13 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     });
 
     return {
-      blobUrl: blob.url,
-      filename: uploadFile.name,
-      capturedAt: capturedAt.toISOString(),
-      duration,
+      kind: "uploaded",
+      clip: {
+        blobUrl: blob.url,
+        filename: uploadFile.name,
+        capturedAt: capturedAt.toISOString(),
+        duration,
+      },
     };
   };
 
@@ -201,33 +277,64 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     }));
 
     setUploadItems(items);
-    setBatchStatus("");
+    setBatchStatus("Loading existing clips...");
     setIsBusy(true);
 
     try {
-      const results = await Promise.allSettled(
-        fileArray.map((file, index) => processClip(file, items[index]!.id)),
+      const existingRes = await fetch(`/api/games/${gameId}/clips`);
+      const existingClips: ExistingClip[] = existingRes.ok
+        ? await existingRes.json()
+        : [];
+      captureRegistryRef.current = new CaptureTimeRegistry(existingClips);
+
+      setBatchStatus(
+        `Processing up to ${MAX_UPLOAD_CONCURRENCY} clips at a time...`,
+      );
+
+      const results = await mapWithConcurrency(
+        fileArray,
+        MAX_UPLOAD_CONCURRENCY,
+        async (file, index) => {
+          try {
+            return await processClip(file, items[index]!.id);
+          } catch (error) {
+            return { kind: "error" as const, error };
+          }
+        },
       );
 
       const clips: UploadedClip[] = [];
-      const failures: string[] = [];
+      let skippedCount = 0;
+      let failureCount = 0;
 
       results.forEach((result, index) => {
-        const filename = fileArray[index]!.name;
-        if (result.status === "fulfilled") {
-          clips.push(result.value);
+        if (result.kind === "uploaded") {
+          clips.push(result.clip);
           return;
         }
 
-        failures.push(filename);
+        if (result.kind === "skipped") {
+          skippedCount += 1;
+          return;
+        }
+
+        failureCount += 1;
         updateItem(items[index]!.id, {
           status: "error",
-          message: errorMessage(result.reason),
+          message: errorMessage(result.error),
         });
       });
 
       if (clips.length === 0) {
-        setBatchStatus("All uploads failed.");
+        if (skippedCount > 0 && failureCount === 0) {
+          setBatchStatus(
+            `Skipped ${skippedCount} clip${skippedCount === 1 ? "" : "s"} already uploaded.`,
+          );
+        } else if (failureCount > 0) {
+          setBatchStatus("All uploads failed.");
+        } else {
+          setBatchStatus("No clips to upload.");
+        }
         return;
       }
 
@@ -244,17 +351,27 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         return;
       }
 
-      if (failures.length > 0) {
-        setBatchStatus(
-          `Saved ${clips.length} clip${clips.length === 1 ? "" : "s"}. ${failures.length} failed.`,
+      const saved = (await res.json()) as { skippedCount?: number };
+      const serverSkipped = saved.skippedCount ?? 0;
+      const totalSkipped = skippedCount + serverSkipped;
+
+      const parts: string[] = [
+        `Uploaded ${clips.length - serverSkipped} clip${clips.length - serverSkipped === 1 ? "" : "s"}.`,
+      ];
+      if (totalSkipped > 0) {
+        parts.push(
+          `Skipped ${totalSkipped} duplicate${totalSkipped === 1 ? "" : "s"}.`,
         );
-      } else {
-        setBatchStatus("Upload complete!");
       }
+      if (failureCount > 0) {
+        parts.push(`${failureCount} failed.`);
+      }
+      setBatchStatus(parts.join(" "));
 
       onUploaded();
     } finally {
       setIsBusy(false);
+      captureRegistryRef.current = null;
     }
   };
 
@@ -328,8 +445,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         </p>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
           Drag and drop videos here, or choose files. Clips are ordered by
-          capture time. Large or iPhone MOV files are compressed to web-friendly
-          MP4 before upload for smoother playback.
+          capture time and duplicates are skipped automatically. Large or iPhone
+          MOV files are compressed to web-friendly MP4 before upload.
         </p>
       </div>
 
@@ -357,7 +474,7 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
       </div>
 
       {uploadItems.length > 0 && (
-        <div className="space-y-2">
+        <div className="max-h-[min(60vh,28rem)] space-y-2 overflow-y-auto">
           {uploadItems.map((item) => (
             <div
               key={item.id}
@@ -371,6 +488,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
                 <div className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   {item.status === "done" ? (
                     <CheckCircle2 className="h-3.5 w-3.5 text-accent" />
+                  ) : item.status === "skipped" ? (
+                    <MinusCircle className="h-3.5 w-3.5 text-muted-foreground" />
                   ) : item.status === "error" ? (
                     <CircleAlert className="h-3.5 w-3.5 text-destructive" />
                   ) : item.status === "queued" ? (

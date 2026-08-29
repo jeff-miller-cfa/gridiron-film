@@ -15,53 +15,40 @@ import { formatDuration } from "@/lib/video";
 import {
   buildTimelines,
   clipTimeToPlaybackTime,
-  findActiveSegmentAtClipTime,
+  findActiveSegmentAtGameTime,
   fullPositionToPlaybackTime,
+  gameTimeToPlaybackTime,
   isGapSegment,
   isPlaySegment,
-  localClipTimeToPlaybackTime,
   playbackToFullPosition,
   playIndexToPlaybackTime,
   playbackTimeToClipTime,
   resolveClipIdFromVideo,
-  segmentLocalTime,
+  segmentGameTime,
 } from "@/lib/player-timeline";
+import { clipTimeToGameTime, gameTimeToClipTime } from "@/lib/clip-layout";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
 import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
 import {
   offenseTimelineTone,
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
-import type { PlayWithClip, VideoClipRecord } from "@/types";
+import type { PlayRecord, VideoClipRecord } from "@/types";
 import { List, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type GamePlayerProps = {
-  plays: PlayWithClip[];
+  plays: PlayRecord[];
   homeTeam: string;
   awayTeam: string;
-  clips?: VideoClipRecord[];
+  clips: VideoClipRecord[];
 };
-
-function deriveClipsFromPlays(plays: PlayWithClip[]): VideoClipRecord[] {
-  const seen = new Set<string>();
-  const clips: VideoClipRecord[] = [];
-
-  for (const play of plays) {
-    if (play.videoClip && !seen.has(play.videoClip.id)) {
-      seen.add(play.videoClip.id);
-      clips.push(play.videoClip);
-    }
-  }
-
-  return clips.sort((a, b) => a.sortOrder - b.sortOrder);
-}
 
 export function GamePlayer({
   plays,
   homeTeam,
   awayTeam,
-  clips: clipsProp,
+  clips,
 }: GamePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -73,11 +60,6 @@ export function GamePlayer({
   const wasPlayingRef = useRef(false);
   const seekTokenRef = useRef(0);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
-
-  const clips = useMemo(
-    () => clipsProp ?? deriveClipsFromPlays(plays),
-    [clipsProp, plays],
-  );
 
   const clipSources = useMemo(
     () => clips.map((clip) => ({ id: clip.id, blobUrl: clip.blobUrl })),
@@ -106,15 +88,22 @@ export function GamePlayer({
       const segment = playSegments.find(
         (s) => time >= s.playbackStart && time < s.playbackEnd,
       );
-      if (!video || !segment?.play.videoClip) return Promise.resolve();
+      if (!video || !segment) return Promise.resolve();
 
       const clamped = Math.max(
         0,
         Math.min(time, playbackDuration > 0 ? playbackDuration - 0.001 : 0),
       );
-      const localTime = segmentLocalTime(clamped, segment);
-      const clipUrl = segment.play.videoClip.blobUrl;
-      const clipId = segment.play.videoClipId;
+
+      const clipTime = playbackTimeToClipTime(clamped, playSegments, clips);
+      if (!clipTime) return Promise.resolve();
+
+      const clip = clips.find((row) => row.id === clipTime.clipId);
+      if (!clip) return Promise.resolve();
+
+      const localTime = clipTime.time;
+      const clipUrl = clip.blobUrl;
+      const clipId = clipTime.clipId;
       const previousClipId = loadedClipIdRef.current;
       const seekToken = ++seekTokenRef.current;
 
@@ -124,8 +113,7 @@ export function GamePlayer({
       currentIndexRef.current = segment.playIndex;
       loadedClipIdRef.current = clipId;
 
-      const clipTime = playbackTimeToClipTime(clamped, playSegments);
-      if (clipTime) persistPlayhead(clipTime.clipId, clipTime.time);
+      persistPlayhead(segmentGameTime(clamped, segment));
 
       return new Promise((resolve) => {
         let seekApplied = false;
@@ -188,7 +176,7 @@ export function GamePlayer({
         }
       });
     },
-    [playSegments, playbackDuration, persistPlayhead],
+    [playSegments, playbackDuration, persistPlayhead, clips],
   );
 
   const seekToPlay = useCallback(
@@ -220,9 +208,8 @@ export function GamePlayer({
 
     let targetPlayback = 0;
     if (persisted) {
-      const restored = clipTimeToPlaybackTime(
-        persisted.clipId,
-        persisted.time,
+      const restored = gameTimeToPlaybackTime(
+        persisted.gameTime,
         playSegments,
       );
       if (restored !== null) targetPlayback = restored;
@@ -247,28 +234,13 @@ export function GamePlayer({
 
       loadedClipIdRef.current = clipId;
 
-      let segment = findActiveSegmentAtClipTime(
-        clipId,
-        local,
-        playSegments,
-      );
+      const gameTime = clipTimeToGameTime(clipId, local, clips);
+      if (gameTime === null) return;
 
-      if (!segment) {
-        const playback = localClipTimeToPlaybackTime(
-          clipId,
-          local,
-          playSegments,
-        );
-        if (playback === null) return;
-        segment =
-          playSegments.find(
-            (s) => playback >= s.playbackStart && playback < s.playbackEnd,
-          ) ?? null;
-      }
-
+      const segment = findActiveSegmentAtGameTime(gameTime, playSegments);
       if (!segment) return;
 
-      if (local >= segment.play.endTime - 0.08) {
+      if (gameTime >= segment.globalEnd - 0.08) {
         const segIdx = playSegments.indexOf(segment);
         const next = playSegments[segIdx + 1];
         if (next) {
@@ -282,9 +254,9 @@ export function GamePlayer({
       }
 
       const newPlayback =
-        segment.playbackStart + (local - segment.play.startTime);
+        segment.playbackStart + (gameTime - segment.globalStart);
       setPlaybackTime(newPlayback);
-      persistPlayhead(clipId, local);
+      persistPlayhead(gameTime);
       if (segment.playIndex !== currentIndexRef.current) {
         currentIndexRef.current = segment.playIndex;
         setCurrentIndex(segment.playIndex);
@@ -377,7 +349,7 @@ export function GamePlayer({
     </div>
   );
 
-  if (!currentPlay?.videoClip || playSegments.length === 0) {
+  if (playSegments.length === 0 || clips.length === 0) {
     return (
       <Card className="surface-card">
         <CardContent className="py-16 text-center text-muted-foreground">
@@ -408,13 +380,13 @@ export function GamePlayer({
                 <span className="font-heading text-lg font-bold">
                   Play {currentPlayNumber}
                 </span>
-                {currentPlay.offenseTeam && (
+                {currentPlay?.offenseTeam && (
                   <Badge className="border-0 bg-white/20 text-white backdrop-blur-sm">
                     {currentPlay.offenseTeam}
                   </Badge>
                 )}
               </div>
-              {currentPlay.notes && (
+              {currentPlay?.notes && (
                 <p className="mt-1 text-sm text-white/85">{currentPlay.notes}</p>
               )}
             </div>

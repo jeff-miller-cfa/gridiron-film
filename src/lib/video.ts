@@ -81,3 +81,24 @@ export function formatGameDate(date: Date | string): string {
     minute: "2-digit",
   }).format(new Date(date));
 }
+
+const CAPTURE_TIME_TOLERANCE_MS = 1000;
+
+export function captureTimeKey(date: Date | string): string {
+  return String(Math.round(new Date(date).getTime() / CAPTURE_TIME_TOLERANCE_MS));
+}
+
+export function captureTimesMatch(
+  a: Date | string,
+  b: Date | string,
+): boolean {
+  return captureTimeKey(a) === captureTimeKey(b);
+}
+
+export function hasMatchingCaptureTime(
+  capturedAt: Date | string,
+  existing: Array<{ capturedAt: Date | string }>,
+): boolean {
+  const key = captureTimeKey(capturedAt);
+  return existing.some((clip) => captureTimeKey(clip.capturedAt) === key);
+}

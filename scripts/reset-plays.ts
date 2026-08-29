@@ -1,5 +1,5 @@
 /**
- * Reset plays for a game to one full-length play per clip.
+ * Reset plays for a game to one full-length play per clip on the game timeline.
  *
  * Usage:
  *   npm run reset-plays -- <gameId>
@@ -8,6 +8,7 @@
 
 import { resetGamePlays } from "../src/lib/reset-game-plays";
 import { getDb } from "../src/db";
+import { formatDuration } from "../src/lib/video";
 
 async function main() {
   const gameIdArg = process.argv[2];
@@ -40,10 +41,15 @@ async function main() {
     `Reset ${game.awayTeam} @ ${game.homeTeam}: removed ${deletedCount} plays, created ${plays.length} plays.`,
   );
 
-  for (const play of plays) {
-    const clip = game.videoClips.find((c) => c.id === play.videoClipId);
+  const orderedClips = [...game.videoClips].sort(
+    (a, b) => a.sortOrder - b.sortOrder,
+  );
+
+  for (let i = 0; i < plays.length; i++) {
+    const play = plays[i]!;
+    const clip = orderedClips[i];
     console.log(
-      `  ${clip?.filename ?? play.videoClipId} (0:00 - ${clip?.duration ?? play.endTime}s)`,
+      `  ${clip?.filename ?? "clip"} (${formatDuration(play.startTime)} - ${formatDuration(play.endTime)})`,
     );
   }
 }

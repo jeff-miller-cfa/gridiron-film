@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { plays, videoClips } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
 import { deleteAllGameClips } from "@/lib/delete-game-clips";
+import { captureTimesMatch } from "@/lib/video";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -38,10 +39,25 @@ export async function POST(request: Request, context: RouteContext) {
       new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime(),
   );
 
+  const newClips = sorted.filter(
+    (clip) =>
+      !existing.some((row) =>
+        captureTimesMatch(clip.capturedAt, row.capturedAt),
+      ),
+  );
+
+  if (newClips.length === 0) {
+    return NextResponse.json({
+      clips: [],
+      plays: [],
+      skippedCount: sorted.length,
+    });
+  }
+
   const insertedClips = await db
     .insert(videoClips)
     .values(
-      sorted.map((clip, index) => ({
+      newClips.map((clip, index) => ({
         gameId,
         blobUrl: clip.blobUrl,
         filename: clip.filename,
@@ -52,16 +68,24 @@ export async function POST(request: Request, context: RouteContext) {
     )
     .returning();
 
-  const newPlays = insertedClips.map((clip) => ({
-    gameId,
-    videoClipId: clip.id,
-    startTime: 0,
-    endTime: clip.duration,
-  }));
+  let gameOffset = existing.reduce((sum, clip) => sum + clip.duration, 0);
+  const newPlays = insertedClips.map((clip) => {
+    const play = {
+      gameId,
+      startTime: gameOffset,
+      endTime: gameOffset + clip.duration,
+    };
+    gameOffset += clip.duration;
+    return play;
+  });
 
   const insertedPlays = await db.insert(plays).values(newPlays).returning();
 
-  return NextResponse.json({ clips: insertedClips, plays: insertedPlays });
+  return NextResponse.json({
+    clips: insertedClips,
+    plays: insertedPlays,
+    skippedCount: sorted.length - newClips.length,
+  });
 }
 
 export async function GET(_request: Request, context: RouteContext) {

@@ -21,12 +21,16 @@ export async function resetGamePlays(gameId: string) {
     .where(eq(plays.gameId, gameId))
     .returning({ id: plays.id });
 
-  const newPlays = game.videoClips.map((clip) => ({
-    gameId,
-    videoClipId: clip.id,
-    startTime: 0,
-    endTime: clip.duration,
-  }));
+  let gameOffset = 0;
+  const newPlays = game.videoClips.map((clip) => {
+    const play = {
+      gameId,
+      startTime: gameOffset,
+      endTime: gameOffset + clip.duration,
+    };
+    gameOffset += clip.duration;
+    return play;
+  });
 
   const inserted =
     newPlays.length > 0

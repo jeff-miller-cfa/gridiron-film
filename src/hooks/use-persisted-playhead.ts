@@ -3,25 +3,23 @@
 import { useCallback, useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-const CLIP_PARAM = "clip";
 const TIME_PARAM = "t";
+const LEGACY_CLIP_PARAM = "clip";
 
 export type PersistedPlayhead = {
-  clipId: string;
-  time: number;
+  gameTime: number;
 };
 
 export function parsePersistedPlayhead(
   params: URLSearchParams,
 ): PersistedPlayhead | null {
-  const clipId = params.get(CLIP_PARAM);
   const timeRaw = params.get(TIME_PARAM);
-  if (!clipId || !timeRaw) return null;
+  if (!timeRaw) return null;
 
-  const time = Number(timeRaw);
-  if (!Number.isFinite(time) || time < 0) return null;
+  const gameTime = Number(timeRaw);
+  if (!Number.isFinite(gameTime) || gameTime < 0) return null;
 
-  return { clipId, time };
+  return { gameTime };
 }
 
 export function usePersistedPlayhead() {
@@ -32,17 +30,18 @@ export function usePersistedPlayhead() {
   const lastWrittenRef = useRef<string | null>(null);
 
   const persisted = parsePersistedPlayhead(searchParams);
+  const hasLegacyClipParam = searchParams.has(LEGACY_CLIP_PARAM);
 
   const persistPlayhead = useCallback(
-    (clipId: string, time: number) => {
-      const rounded = Math.round(time * 10) / 10;
-      const key = `${clipId}:${rounded}`;
+    (gameTime: number) => {
+      const rounded = Math.round(gameTime * 10) / 10;
+      const key = String(rounded);
       if (key === lastWrittenRef.current) return;
 
       if (pendingRef.current) clearTimeout(pendingRef.current);
       pendingRef.current = setTimeout(() => {
         const next = new URLSearchParams(searchParams.toString());
-        next.set(CLIP_PARAM, clipId);
+        next.delete(LEGACY_CLIP_PARAM);
         next.set(TIME_PARAM, String(rounded));
         lastWrittenRef.current = key;
         router.replace(`${pathname}?${next.toString()}`, { scroll: false });
@@ -57,5 +56,5 @@ export function usePersistedPlayhead() {
     };
   }, []);
 
-  return { persisted, persistPlayhead };
+  return { persisted, hasLegacyClipParam, persistPlayhead };
 }

@@ -9,7 +9,6 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 type PlayUpdate = {
   id?: string;
-  videoClipId: string;
   startTime: number;
   endTime: number;
   offenseTeam?: string | null;
@@ -22,24 +21,14 @@ export async function GET(_request: Request, context: RouteContext) {
 
   const game = await db.query.games.findFirst({
     where: (games, { eq: equals }) => equals(games.id, gameId),
-    with: {
-      videoClips: {
-        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
-      },
-      plays: {
-        with: { videoClip: true },
-      },
-    },
+    with: { plays: true },
   });
 
   if (!game) {
     return NextResponse.json({ error: "Game not found" }, { status: 404 });
   }
 
-  const orderedClipIds = game.videoClips.map((clip) => clip.id);
-  const gamePlays = sortPlays(game.plays, orderedClipIds);
-
-  return NextResponse.json(gamePlays);
+  return NextResponse.json(sortPlays(game.plays));
 }
 
 export async function PUT(request: Request, context: RouteContext) {
@@ -76,7 +65,6 @@ export async function PUT(request: Request, context: RouteContext) {
 
   for (const p of playUpdates) {
     const values = {
-      videoClipId: p.videoClipId,
       startTime: p.startTime,
       endTime: p.endTime,
       offenseTeam: p.offenseTeam ?? null,
@@ -100,15 +88,5 @@ export async function PUT(request: Request, context: RouteContext) {
     }
   }
 
-  const game = await db.query.games.findFirst({
-    where: (games, { eq: equals }) => equals(games.id, gameId),
-    with: {
-      videoClips: {
-        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
-      },
-    },
-  });
-  const orderedClipIds = game?.videoClips.map((clip) => clip.id) ?? [];
-
-  return NextResponse.json(sortPlays(results, orderedClipIds));
+  return NextResponse.json(sortPlays(results));
 }

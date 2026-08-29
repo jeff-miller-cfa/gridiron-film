@@ -11,7 +11,7 @@ import { GameAdminMenu } from "@/components/game-admin-menu";
 import { buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { sortPlays, orderedClipIdsFromClips } from "@/lib/plays";
+import { sortPlays } from "@/lib/plays";
 import { formatGameDate } from "@/lib/video";
 import type { GameWithRelations, PlayDraft, PlayGap } from "@/types";
 import { Calendar, ExternalLink, MapPin } from "lucide-react";
@@ -32,15 +32,9 @@ function parseViewMode(value: string | null): ViewMode {
 function normalizePlaysSnapshot(plays: PlayDraft[]): string {
   return JSON.stringify(
     [...plays]
-      .sort((a, b) => {
-        if (a.videoClipId !== b.videoClipId) {
-          return a.videoClipId.localeCompare(b.videoClipId);
-        }
-        return a.startTime - b.startTime;
-      })
+      .sort((a, b) => a.startTime - b.startTime)
       .map((p) => ({
         id: p.id ?? null,
-        videoClipId: p.videoClipId,
         startTime: p.startTime,
         endTime: p.endTime,
         offenseTeam: p.offenseTeam ?? null,
@@ -52,7 +46,6 @@ function normalizePlaysSnapshot(plays: PlayDraft[]): string {
 function mapPlaysFromApi(items: PlayDraft[]): PlayDraft[] {
   return items.map((p) => ({
     id: p.id,
-    videoClipId: p.videoClipId,
     startTime: p.startTime,
     endTime: p.endTime,
     offenseTeam: p.offenseTeam,
@@ -81,7 +74,6 @@ export default function AdminGamePage() {
     const loadedPlays = mapPlaysFromApi(
       (data.plays ?? []).map((p) => ({
         id: p.id,
-        videoClipId: p.videoClipId,
         startTime: p.startTime,
         endTime: p.endTime,
         offenseTeam: p.offenseTeam,
@@ -139,9 +131,7 @@ export default function AdminGamePage() {
 
           const match = saved.find(
             (s) =>
-              s.videoClipId === play.videoClipId &&
-              s.startTime === play.startTime &&
-              s.endTime === play.endTime,
+              s.startTime === play.startTime && s.endTime === play.endTime,
           );
           if (match?.id) {
             changed = true;
@@ -182,7 +172,6 @@ export default function AdminGamePage() {
       ...current,
       ...gaps.map((gap) => ({
         clientKey: crypto.randomUUID(),
-        videoClipId: gap.videoClipId,
         startTime: gap.startTime,
         endTime: gap.endTime,
         offenseTeam: null,
@@ -217,7 +206,7 @@ export default function AdminGamePage() {
     );
   }
 
-  const playsWithClips = sortPlays(
+  const sortedPlays = sortPlays(
     plays.map((p) => ({
       ...p,
       id: p.id ?? "",
@@ -226,9 +215,7 @@ export default function AdminGamePage() {
       notes: p.notes ?? null,
       createdAt: "",
       updatedAt: "",
-      videoClip: game.videoClips?.find((c) => c.id === p.videoClipId),
     })),
-    orderedClipIdsFromClips(game.videoClips ?? []),
   );
 
   return (
@@ -336,7 +323,8 @@ export default function AdminGamePage() {
 
           <TabsContent value="export" className="surface-card p-6">
             <ExportVideoButton
-              plays={playsWithClips}
+              plays={sortedPlays}
+              clips={game.videoClips ?? []}
               gameTitle={`${game.awayTeam}-at-${game.homeTeam}`}
             />
             <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">

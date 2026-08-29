@@ -8,9 +8,7 @@ export async function getAllGames() {
   const results = await db.query.games.findMany({
     orderBy: [desc(games.gameDateTime)],
     with: {
-      plays: {
-        with: { videoClip: true },
-      },
+      plays: true,
       videoClips: {
         orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
       },
@@ -19,10 +17,7 @@ export async function getAllGames() {
 
   return results.map((game) => ({
     ...game,
-    plays: sortPlays(
-      game.plays,
-      game.videoClips.map((clip) => clip.id),
-    ),
+    plays: sortPlays(game.plays),
   }));
 }
 
@@ -34,9 +29,7 @@ export async function getGameById(id: string) {
       videoClips: {
         orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
       },
-      plays: {
-        with: { videoClip: true },
-      },
+      plays: true,
     },
   });
 
@@ -44,9 +37,6 @@ export async function getGameById(id: string) {
 
   return {
     ...game,
-    plays: sortPlays(
-      game.plays,
-      game.videoClips.map((clip) => clip.id),
-    ),
+    plays: sortPlays(game.plays),
   };
 }
