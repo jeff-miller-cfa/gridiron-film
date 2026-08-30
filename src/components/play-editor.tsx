@@ -28,6 +28,7 @@ import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
 import { playIdentityKey, sortPlays } from "@/lib/plays";
 import {
   offenseTimelineTone,
+  playListTeamButtonClass,
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
 import type { PlayDraft, PlayGap, PlayRecord, VideoClipRecord } from "@/types";
@@ -712,10 +713,13 @@ export function PlayEditor({
                         key={team}
                         type="button"
                         size="xs"
-                        variant={
-                          play.offenseTeam === team ? "default" : "outline"
-                        }
-                        className="max-w-[5.5rem] truncate px-1.5"
+                        variant="outline"
+                        className={playListTeamButtonClass(
+                          team,
+                          homeTeam,
+                          awayTeam,
+                          play.offenseTeam,
+                        )}
                         title={team}
                         onClick={() =>
                           updatePlayField(play, "offenseTeam", team)
