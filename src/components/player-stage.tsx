@@ -128,10 +128,10 @@ export const playerVideoColumnClass =
   "flex min-h-0 flex-col gap-3 max-lg:landscape:h-full max-lg:landscape:min-h-0 max-lg:landscape:gap-2";
 
 export const playerVideoShellClass =
-  "surface-elevated flex min-h-0 flex-1 overflow-hidden p-1 max-lg:portrait:shrink-0";
+  "surface-elevated flex min-h-0 flex-1 overflow-hidden p-1 max-lg:portrait:w-full max-lg:portrait:flex-none";
 
 export const playerVideoFrameClass =
-  "relative flex min-h-0 flex-1 overflow-hidden rounded-xl bg-slate-900 max-lg:portrait:aspect-video max-lg:portrait:flex-none";
+  "relative flex min-h-0 flex-1 overflow-hidden rounded-xl bg-slate-900 max-lg:portrait:aspect-video max-lg:portrait:w-full max-lg:portrait:flex-none";
 
 export const playerVideoClass =
   "h-full w-full max-lg:portrait:aspect-video max-lg:portrait:h-auto object-contain";
