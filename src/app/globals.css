@@ -81,6 +81,15 @@
   --sidebar-accent-foreground: oklch(0.32 0.05 250);
   --sidebar-border: oklch(0.91 0.012 250);
   --sidebar-ring: oklch(0.48 0.12 155);
+  --site-header-height: 4rem;
+  --site-header-offset: 4rem;
+}
+
+@media (max-width: 1023px) and (orientation: landscape) {
+  :root {
+    --site-header-height: 2.75rem;
+    --site-header-offset: 0px;
+  }
 }
 
 @layer base {

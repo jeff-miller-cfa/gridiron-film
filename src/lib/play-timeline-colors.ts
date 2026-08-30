@@ -49,10 +49,14 @@ export function playTimelineSegmentClass(
   isSelected: boolean,
 ): string {
   const base =
-    "absolute top-0 flex h-full items-center justify-center border-r border-white/40 text-[10px] font-bold transition-colors sm:text-xs";
+    "absolute top-0 flex h-full items-center justify-center border-r border-white/40 text-[9px] font-bold leading-none transition-colors sm:text-[10px]";
   const palette = toneStyles(tone);
 
-  return cn(base, isSelected ? palette.solid : palette.tint);
+  return cn(
+    base,
+    palette[isSelected ? "solid" : "tint"],
+    isSelected && "z-[5]",
+  );
 }
 
 export function teamTimelineTone(
@@ -71,13 +75,31 @@ export function playListTeamButtonClass(
   awayTeam: string,
   selectedOffenseTeam: string | null | undefined,
 ): string {
-  const tone = teamTimelineTone(team, homeTeam, awayTeam);
-  const palette = toneStyles(tone);
   const base =
     "max-w-[5.5rem] truncate border px-1.5 shadow-none hover:opacity-100";
+  const neutral =
+    "border-border/80 bg-background text-muted-foreground hover:bg-muted";
+
+  if (!selectedOffenseTeam || selectedOffenseTeam !== team) {
+    return cn(base, neutral);
+  }
+
+  const tone = teamTimelineTone(team, homeTeam, awayTeam);
+  const palette = toneStyles(tone);
+
+  return cn(base, palette.buttonSolid);
+}
+
+export function offenseTeamBadgeClass(
+  offenseTeam: string,
+  homeTeam: string,
+  awayTeam: string,
+): string {
+  const tone = offenseTimelineTone(offenseTeam, homeTeam, awayTeam);
+  const palette = toneStyles(tone);
 
   return cn(
-    base,
-    selectedOffenseTeam === team ? palette.buttonSolid : palette.buttonTint,
+    "inline-flex max-w-full truncate rounded-md border px-1.5 py-0.5 text-xs font-medium",
+    palette.buttonSolid,
   );
 }

@@ -11,6 +11,7 @@ import {
   buildTimelines,
   clipTimeToPlaybackTime,
   findActiveSegmentAtGameTime,
+  resolvePlaybackSegment,
   fullPositionToPlaybackTime,
   fullPositionToSegment,
   gameTimeToPlaybackTime,
@@ -18,13 +19,24 @@ import {
   isGapSegment,
   isPlaySegment,
   playbackToFullPosition,
-  playbackTimeToClipTime,
   resolveClipIdFromVideo,
   segmentGameTime,
 } from "@/lib/player-timeline";
-import { clipTimeToGameTime, gameTimeToClipTime } from "@/lib/clip-layout";
-import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
+import { clipTimeToGameTime, gameTimeToClipTime, clipIndexForGameTime } from "@/lib/clip-layout";
+import { usePersistedPlayhead, parsePersistedPlayhead } from "@/hooks/use-persisted-playhead";
+import { useElementWidth } from "@/hooks/use-element-width";
 import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
+import {
+  findPlayDraftByKey,
+  MIN_PLAY_DURATION,
+  normalizeGamePlays,
+  snapGameTime,
+} from "@/lib/play-boundaries";
+import {
+  DEFAULT_PLAY_LOOKBACK_SECONDS,
+  normalizePlayLookbackSeconds,
+} from "@/lib/game-settings";
+import { shouldShowTimelinePlayNumber } from "@/lib/timeline-labels";
 import { playIdentityKey, sortPlays } from "@/lib/plays";
 import {
   offenseTimelineTone,
@@ -34,13 +46,30 @@ import {
 import type { PlayDraft, PlayGap, PlayRecord, VideoClipRecord } from "@/types";
 import { Eye, EyeOff, Pause, Pencil, Play, RotateCcw, Scissors, StickyNote, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  PlayerStage,
+  playerMainGridClass,
+  playerPlayListCardClass,
+  playerPlayListContentClass,
+  playerVideoClass,
+  playerVideoColumnClass,
+  playerVideoFrameClass,
+  playerVideoShellClass,
+} from "@/components/player-stage";
+import { ClipPlayEditor } from "@/components/clip-play-editor";
+import { PlayerLoopToggle } from "@/components/player-loop-toggle";
+import { PlayerVideoOverlay } from "@/components/player-video-overlay";
+
+type EditMode = "game" | "clip";
 
 type PlayEditorProps = {
+  mode: EditMode;
   clips: VideoClipRecord[];
   plays: PlayDraft[];
   homeTeam: string;
   awayTeam: string;
   gameId: string;
+  playLookbackSeconds?: number;
   onChange: (plays: PlayDraft[]) => void;
   onRestoreGap: (gaps: PlayGap[]) => void;
 };
@@ -49,19 +78,39 @@ function parseShowGaps(value: string | null): boolean {
   return value === "true" || value === "1";
 }
 
+function parseClipIndex(value: string | null): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
 export function PlayEditor({
+  mode,
   clips,
   plays,
   homeTeam,
   awayTeam,
   gameId,
+  playLookbackSeconds = DEFAULT_PLAY_LOOKBACK_SECONDS,
   onChange,
   onRestoreGap,
 }: PlayEditorProps) {
+  const lookbackSeconds = normalizePlayLookbackSeconds(playLookbackSeconds);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const showGapsOnTimeline = parseShowGaps(searchParams.get("gaps"));
+  const clipIndex = parseClipIndex(searchParams.get("clip"));
+
+  const setClipIndex = useCallback(
+    (index: number) => {
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("view", "clip");
+      next.set("clip", String(Math.max(0, index)));
+      next.delete("mode");
+      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
 
   const setShowGapsOnTimeline = useCallback(
     (show: boolean) => {
@@ -78,6 +127,7 @@ export function PlayEditor({
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineWidth = useElementWidth(timelineRef);
   const playListRef = useRef<HTMLDivElement>(null);
   const playItemRefs = useRef(new Map<string, HTMLDivElement>());
   const seekingRef = useRef(false);
@@ -87,13 +137,18 @@ export function PlayEditor({
   const wasPlayingRef = useRef(false);
   const isPlayingRef = useRef(false);
   const seekTokenRef = useRef(0);
-  const { persisted, persistPlayhead } = usePersistedPlayhead();
+  const gameTimeRef = useRef(0);
+  const { persisted, persistPlayhead, flushPlayhead } = usePersistedPlayhead();
 
   const [playbackTime, setPlaybackTime] = useState(0);
-  const [clipLocalTime, setClipLocalTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   isPlayingRef.current = isPlaying;
+  const [loopPlay, setLoopPlay] = useState(false);
+  const loopPlayRef = useRef(false);
+  loopPlayRef.current = loopPlay;
+  const selectedPlayIdRef = useRef<string | null>(null);
   const [selectedPlayId, setSelectedPlayId] = useState<string | null>(null);
+  selectedPlayIdRef.current = selectedPlayId;
   const [notesEditorPlayId, setNotesEditorPlayId] = useState<string | null>(null);
 
   const playRecords: PlayRecord[] = useMemo(
@@ -124,19 +179,25 @@ export function PlayEditor({
   const sortedPlays = useMemo(() => sortPlays(plays), [plays]);
 
   const fullPosition = playbackToFullPosition(playbackTime, playSegments);
-  const currentClipLocation = useMemo(
-    () => gameTimeToClipTime(fullPosition, clips),
-    [fullPosition, clips],
-  );
   const timelineDuration = showGapsOnTimeline ? fullDuration : playbackDuration;
   const timelinePosition = showGapsOnTimeline ? fullPosition : playbackTime;
 
   const seekToPlaybackTime = useCallback(
-    (time: number, autoplay = false): Promise<void> => {
+    (
+      time: number,
+      autoplay = false,
+      preferredPlayKey: string | null = null,
+    ): Promise<void> => {
       const video = videoRef.current;
-      const segment = playSegments.find(
-        (s) => time >= s.playbackStart && time < s.playbackEnd,
-      );
+      const segment =
+        (preferredPlayKey
+          ? playSegments.find(
+              (row) => playIdentityKey(row.play) === preferredPlayKey,
+            )
+          : null) ??
+        playSegments.find(
+          (s) => time >= s.playbackStart && time < s.playbackEnd,
+        );
       if (!video || !segment) return Promise.resolve();
 
       const clamped = Math.max(
@@ -144,27 +205,25 @@ export function PlayEditor({
         Math.min(time, playbackDuration > 0 ? playbackDuration - 0.001 : 0),
       );
 
-      const clipTime = playbackTimeToClipTime(clamped, playSegments, clips);
-      if (!clipTime) return Promise.resolve();
+      const gameTime = segmentGameTime(clamped, segment);
+      const located = gameTimeToClipTime(gameTime, clips);
+      if (!located) return Promise.resolve();
 
-      const clip = clips.find((row) => row.id === clipTime.clipId);
-      if (!clip) return Promise.resolve();
-
-      const localTime = clipTime.time;
+      const clip = located.clip;
+      const localTime = located.localTime;
       const clipUrl = clip.blobUrl;
-      const clipId = clipTime.clipId;
-      const previousClipId = loadedClipIdRef.current;
+      const clipId = located.clipId;
+      const previousClipId = resolveClipIdFromVideo(video, clips);
       const seekToken = ++seekTokenRef.current;
 
       seekingRef.current = true;
       setPlaybackTime(clamped);
-      setClipLocalTime(localTime);
       const playId = playIdentityKey(segment.play);
       setSelectedPlayId(playId);
       currentPlayIdRef.current = playId;
-      loadedClipIdRef.current = clipId;
 
-      persistPlayhead(segmentGameTime(clamped, segment));
+      gameTimeRef.current = gameTime;
+      persistPlayhead(gameTime);
 
       return new Promise((resolve) => {
         let seekApplied = false;
@@ -189,6 +248,7 @@ export function PlayEditor({
         const finish = () => {
           if (seekToken !== seekTokenRef.current) return;
           seekingRef.current = false;
+          loadedClipIdRef.current = clipId;
           resumePlayback();
           resolve();
         };
@@ -258,7 +318,7 @@ export function PlayEditor({
         (s) => playIdentityKey(s.play) === playId,
       );
       if (!segment) return;
-      void seekToPlaybackTime(segment.playbackStart);
+      void seekToPlaybackTime(segment.playbackStart, true, playId);
     },
     [playSegments, seekToPlaybackTime],
   );
@@ -270,6 +330,7 @@ export function PlayEditor({
       fullPosition: timelinePosition,
       onSeek: (position) => {
         if (showGapsOnTimeline) {
+          gameTimeRef.current = position;
           seekToFullPosition(position);
         } else {
           void seekToPlaybackTime(position);
@@ -315,8 +376,7 @@ export function PlayEditor({
       if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
       const local = video.currentTime;
-      const clipId =
-        loadedClipIdRef.current ?? resolveClipIdFromVideo(video, clips);
+      const clipId = resolveClipIdFromVideo(video, clips);
       if (!clipId) return;
 
       loadedClipIdRef.current = clipId;
@@ -324,10 +384,24 @@ export function PlayEditor({
       const gameTime = clipTimeToGameTime(clipId, local, clips);
       if (gameTime === null) return;
 
-      const segment = findActiveSegmentAtGameTime(gameTime, playSegments);
+      const segment = resolvePlaybackSegment(
+        gameTime,
+        playSegments,
+        selectedPlayIdRef.current,
+      );
       if (!segment) return;
 
       if (gameTime >= segment.globalEnd - 0.08) {
+        const shouldLoop =
+          loopPlayRef.current &&
+          selectedPlayIdRef.current !== null &&
+          playIdentityKey(segment.play) === selectedPlayIdRef.current;
+
+        if (shouldLoop) {
+          void seekToPlaybackTime(segment.playbackStart, isPlayingRef.current);
+          return;
+        }
+
         const segIdx = playSegments.indexOf(segment);
         const next = playSegments[segIdx + 1];
         if (next) {
@@ -343,7 +417,7 @@ export function PlayEditor({
       const newPlayback =
         segment.playbackStart + (gameTime - segment.globalStart);
       setPlaybackTime(newPlayback);
-      setClipLocalTime(local);
+      gameTimeRef.current = gameTime;
       persistPlayhead(gameTime);
 
       const playId = playIdentityKey(segment.play);
@@ -365,25 +439,55 @@ export function PlayEditor({
   }, [playSegments, clips, persistPlayhead, seekToPlaybackTime]);
 
   useEffect(() => {
+    if (mode !== "game") return;
+    return () => {
+      flushPlayhead(gameTimeRef.current);
+    };
+  }, [flushPlayhead, mode]);
+
+  useEffect(() => {
+    if (mode !== "clip" || !persisted) return;
+    const targetClipIndex = clipIndexForGameTime(persisted.gameTime, clips);
+    if (targetClipIndex !== clipIndex) {
+      setClipIndex(targetClipIndex);
+    }
+  }, [clipIndex, clips, mode, persisted, setClipIndex]);
+
+  useEffect(() => {
     if (!selectedPlayId) return;
     const item = playItemRefs.current.get(selectedPlayId);
     item?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [selectedPlayId]);
 
   const updatePlays = (updated: PlayDraft[]) => {
-    onChange(updated);
+    onChange(normalizeGamePlays(updated, clips));
   };
 
-  const splitAtCurrentTime = () => {
-    const gameTime = fullPosition;
-    const playIndex = plays.findIndex(
-      (p) =>
-        gameTime > p.startTime + 0.1 && gameTime < p.endTime - 0.1,
+  const splitAtTime = (offsetSeconds = 0) => {
+    const segment = findActiveSegmentAtGameTime(fullPosition, playSegments);
+    if (!segment) return;
+
+    const play = findPlayDraftByKey(
+      plays,
+      playIdentityKey(segment.play),
+    );
+    if (!play) return;
+
+    const gameTime = snapGameTime(
+      Math.max(
+        play.startTime + MIN_PLAY_DURATION,
+        Math.min(play.endTime - MIN_PLAY_DURATION, fullPosition + offsetSeconds),
+      ),
     );
 
-    if (playIndex === -1) return;
+    if (
+      gameTime <= play.startTime + MIN_PLAY_DURATION ||
+      gameTime >= play.endTime - MIN_PLAY_DURATION
+    ) {
+      return;
+    }
 
-    const play = plays[playIndex];
+    const playKey = playIdentityKey(play);
     const newPlay: PlayDraft = {
       clientKey: crypto.randomUUID(),
       startTime: gameTime,
@@ -392,12 +496,16 @@ export function PlayEditor({
       notes: "",
     };
 
-    const updated = plays.map((p, i) =>
-      i === playIndex ? { ...p, endTime: gameTime } : p,
+    const updated = plays.flatMap((p) =>
+      playIdentityKey(p) === playKey
+        ? [{ ...p, endTime: gameTime }, newPlay]
+        : [p],
     );
-    updated.push(newPlay);
     updatePlays(updated);
   };
+
+  const splitAtCurrentTime = () => splitAtTime(0);
+  const splitBeforePlayhead = () => splitAtTime(-lookbackSeconds);
 
   const removePlay = (play: PlayDraft) => {
     const targetKey = playIdentityKey(play);
@@ -430,11 +538,29 @@ export function PlayEditor({
     );
   }
 
+  if (mode === "clip") {
+    return (
+      <ClipPlayEditor
+        clips={clips}
+        plays={plays}
+        homeTeam={homeTeam}
+        awayTeam={awayTeam}
+        clipIndex={clipIndex}
+        playLookbackSeconds={lookbackSeconds}
+        onClipIndexChange={setClipIndex}
+        onChange={onChange}
+        initialGameTime={persisted?.gameTime ?? null}
+        onGameTimeChange={persistPlayhead}
+      />
+    );
+  }
+
   if (playSegments.length === 0) {
     return (
       <Card className="surface-card border-dashed">
         <CardContent className="py-12 text-center text-muted-foreground">
-          No plays yet. Restore a gap from the timeline or upload footage.
+          No plays yet. Restore a gap from the timeline, use per-clip mode, or
+          upload footage.
         </CardContent>
       </Card>
     );
@@ -443,7 +569,21 @@ export function PlayEditor({
   const currentSegment =
     playSegments.find((s) => playIdentityKey(s.play) === selectedPlayId) ??
     playSegments[0];
-  const currentClip = currentClipLocation?.clip;
+  const activeSegment =
+    playSegments.find(
+      (segment) =>
+        playbackTime >= segment.playbackStart &&
+        playbackTime < segment.playbackEnd,
+    ) ?? currentSegment;
+  const playPosition = activeSegment
+    ? Math.max(
+        0,
+        Math.min(
+          activeSegment.duration,
+          playbackTime - activeSegment.playbackStart,
+        ),
+      )
+    : 0;
 
   const togglePlay = async () => {
     const video = videoRef.current;
@@ -458,198 +598,239 @@ export function PlayEditor({
   };
 
   const timelineSegments = showGapsOnTimeline ? segments : playSegments;
+  const playListSegments = showGapsOnTimeline ? segments : playSegments;
+
+  const timelinePanel = (
+    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:py-3">
+      <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+        <span>{formatDuration(playbackTime)}</span>
+        <div className="flex items-center gap-2">
+          {gapSegments.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 rounded-lg px-2 text-xs"
+              onClick={() => setShowGapsOnTimeline(!showGapsOnTimeline)}
+            >
+              {showGapsOnTimeline ? (
+                <EyeOff className="mr-1.5 h-3.5 w-3.5" />
+              ) : (
+                <Eye className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {showGapsOnTimeline ? "Hide gaps" : "Show gaps"}
+            </Button>
+          )}
+          <span>
+            {formatDuration(
+              showGapsOnTimeline ? fullDuration : playbackDuration,
+            )}{" "}
+            total
+          </span>
+        </div>
+      </div>
+      <div
+        ref={timelineRef}
+        role="slider"
+        aria-label="Stitched game timeline"
+        tabIndex={0}
+        className="relative h-10 max-lg:landscape:h-9 sm:h-11 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+        onPointerDown={onTimelinePointerDown}
+      >
+        {timelineSegments.map((segment) => {
+          const useFullLayout = showGapsOnTimeline;
+          const durationBase = useFullLayout
+            ? fullDuration
+            : playbackDuration;
+          const segmentStart = useFullLayout
+            ? segment.globalStart
+            : isPlaySegment(segment)
+              ? segment.playbackStart
+              : 0;
+          const left =
+            durationBase > 0 ? (segmentStart / durationBase) * 100 : 0;
+          const width =
+            durationBase > 0 ? (segment.duration / durationBase) * 100 : 0;
+
+          if (isGapSegment(segment)) {
+            return (
+              <button
+                key={`gap-${segment.globalStart}-${segment.globalEnd}`}
+                type="button"
+                title="Restore deleted play"
+                className="absolute top-0 flex h-full items-center justify-center border-r border-white/40 bg-muted-foreground/30 text-muted-foreground transition-colors hover:bg-accent/40"
+                style={{ left: `${left}%`, width: `${width}%` }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRestoreGap(gapToPlayGaps(segment));
+                }}
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+            );
+          }
+
+          const playId = playIdentityKey(segment.play);
+          const isSelected = playId === selectedPlayId;
+          const offenseTone = offenseTimelineTone(
+            segment.play.offenseTeam,
+            homeTeam,
+            awayTeam,
+          );
+
+          return (
+            <button
+              key={playIdentityKey(segment.play)}
+              type="button"
+              title={
+                segment.play.offenseTeam
+                  ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
+                  : `Play ${segment.playNumber}`
+              }
+              className={playTimelineSegmentClass(offenseTone, isSelected)}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              onClick={(e) => {
+                e.stopPropagation();
+                seekToPlay(playId);
+              }}
+            >
+              {shouldShowTimelinePlayNumber(
+                width,
+                timelineWidth,
+                segment.playNumber,
+                isSelected,
+              ) ? (
+                <span className="tabular-nums">{segment.playNumber}</span>
+              ) : null}
+            </button>
+          );
+        })}
+        <div
+          className="pointer-events-none absolute top-0 z-10 h-full w-0.5 bg-accent shadow-[0_0_6px_rgba(0,0,0,0.35)]"
+          style={{ left: `${playheadPercent}%` }}
+        />
+        <div
+          role="presentation"
+          className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
+          style={{ left: `${playheadPercent}%`, touchAction: "none" }}
+          onPointerDown={onPlayheadPointerDown}
+        />
+      </div>
+      <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
+        Drag the timeline or playhead to scrub — click a play to jump
+        {showGapsOnTimeline && gapSegments.length > 0
+          ? ", gray segments can be restored"
+          : ""}
+      </p>
+    </div>
+  );
 
   return (
-    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:items-stretch max-lg:landscape:gap-2 lg:grid-cols-[1fr_380px]">
-      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
-        <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
-          <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
+    <PlayerStage>
+      {timelinePanel}
+
+      <div className={playerMainGridClass}>
+      <div className={playerVideoColumnClass}>
+        <div className={playerVideoShellClass}>
+          <div className={playerVideoFrameClass}>
             <video
               ref={videoRef}
-              className="aspect-video w-full max-lg:landscape:aspect-auto max-lg:landscape:h-full max-lg:landscape:object-contain"
+              className={playerVideoClass}
               playsInline
               preload="auto"
               controls={false}
               onClick={() => void togglePlay()}
             />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3 max-lg:landscape:px-3 max-lg:landscape:py-2">
-              <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm max-lg:landscape:text-xs">
-                <span className="font-medium">
-                  Play {currentSegment?.playNumber ?? 1}
-                  {currentClip ? ` · ${currentClip.filename}` : ""}
-                </span>
-                <span className="tabular-nums">
-                  {formatDuration(playbackTime)} / {formatDuration(playbackDuration)}
-                </span>
-              </div>
-              {currentClip && (
-                <p className="mt-1 text-[11px] text-white/70 sm:text-xs max-lg:landscape:hidden">
-                  Clip {formatDuration(clipLocalTime)} /{" "}
-                  {formatDuration(currentClip.duration)} · Game{" "}
-                  {formatDuration(fullPosition)}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 max-lg:landscape:shrink-0">
-          <Button
-            variant="outline"
-            className="rounded-xl max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
-            onClick={() => void togglePlay()}
-          >
-            {isPlaying ? (
-              <>
-                <Pause className="mr-2 h-4 w-4" />
-                Pause
-              </>
-            ) : (
-              <>
-                <Play className="mr-2 h-4 w-4" />
-                Play
-              </>
-            )}
-          </Button>
-          <Button
-            className="rounded-xl max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
-            onClick={splitAtCurrentTime}
-          >
-            <Scissors className="mr-2 h-4 w-4 max-lg:landscape:mr-1.5 max-lg:landscape:h-3.5 max-lg:landscape:w-3.5" />
-            <span className="max-lg:landscape:hidden">Split at playhead</span>
-            <span className="hidden max-lg:landscape:inline">Split</span>
-          </Button>
-        </div>
-
-        <div className="surface-card space-y-2 p-4 max-lg:landscape:hidden">
-          <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
-            <span>{formatDuration(playbackTime)}</span>
-            <div className="flex items-center gap-2">
-              {gapSegments.length > 0 && (
+            <PlayerLoopToggle
+              enabled={loopPlay}
+              onChange={setLoopPlay}
+              className="absolute top-3 right-3 z-10 max-lg:landscape:top-2 max-lg:landscape:right-2"
+            />
+            <div className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-4rem)] flex-wrap items-center gap-2 max-lg:landscape:top-2 max-lg:landscape:left-2">
+              <Button
+                variant="outline"
+                className="rounded-xl border-white/25 bg-black/50 text-white backdrop-blur-sm hover:bg-black/65 hover:text-white max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
+                onClick={() => void togglePlay()}
+              >
+                {isPlaying ? (
+                  <>
+                    <Pause className="mr-2 h-4 w-4" />
+                    Pause
+                  </>
+                ) : (
+                  <>
+                    <Play className="mr-2 h-4 w-4" />
+                    Play
+                  </>
+                )}
+              </Button>
+              <Button
+                className="rounded-xl bg-primary/90 text-primary-foreground backdrop-blur-sm hover:bg-primary max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
+                onClick={splitAtCurrentTime}
+                title="Split at playhead"
+              >
+                <Scissors className="mr-2 h-4 w-4 max-lg:landscape:mr-1.5 max-lg:landscape:h-3.5 max-lg:landscape:w-3.5" />
+                <span className="max-lg:landscape:hidden">Split at playhead</span>
+                <span className="hidden max-lg:landscape:inline">Split</span>
+              </Button>
+              {lookbackSeconds > 0 ? (
                 <Button
-                  type="button"
                   variant="outline"
-                  size="sm"
-                  className="h-7 rounded-lg px-2 text-xs"
-                  onClick={() => setShowGapsOnTimeline(!showGapsOnTimeline)}
+                  className="rounded-xl border-white/25 bg-black/50 text-white backdrop-blur-sm hover:bg-black/65 hover:text-white max-lg:landscape:h-9 max-lg:landscape:px-3 max-lg:landscape:text-sm"
+                  onClick={splitBeforePlayhead}
+                  title={`Split ${lookbackSeconds} seconds before playhead`}
                 >
-                  {showGapsOnTimeline ? (
-                    <EyeOff className="mr-1.5 h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="mr-1.5 h-3.5 w-3.5" />
-                  )}
-                  {showGapsOnTimeline ? "Hide gaps" : "Show gaps"}
+                  <Scissors className="mr-2 h-4 w-4 max-lg:landscape:mr-1.5 max-lg:landscape:h-3.5 max-lg:landscape:w-3.5" />
+                  <span className="max-lg:landscape:hidden">
+                    Split -{lookbackSeconds}s
+                  </span>
+                  <span className="hidden max-lg:landscape:inline">
+                    -{lookbackSeconds}s
+                  </span>
                 </Button>
-              )}
-              <span>
-                {formatDuration(
-                  showGapsOnTimeline ? fullDuration : playbackDuration,
-                )}{" "}
-                total
-              </span>
+              ) : null}
             </div>
-          </div>
-          <div
-            ref={timelineRef}
-            role="slider"
-            aria-label="Stitched game timeline"
-            tabIndex={0}
-            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
-            onPointerDown={onTimelinePointerDown}
-          >
-            {timelineSegments.map((segment) => {
-              const useFullLayout = showGapsOnTimeline;
-              const durationBase = useFullLayout
-                ? fullDuration
-                : playbackDuration;
-              const segmentStart = useFullLayout
-                ? segment.globalStart
-                : isPlaySegment(segment)
-                  ? segment.playbackStart
-                  : 0;
-              const left =
-                durationBase > 0 ? (segmentStart / durationBase) * 100 : 0;
-              const width =
-                durationBase > 0 ? (segment.duration / durationBase) * 100 : 0;
-
-              if (isGapSegment(segment)) {
-                return (
-                  <button
-                    key={`gap-${segment.globalStart}-${segment.globalEnd}`}
-                    type="button"
-                    title="Restore deleted play"
-                    className="absolute top-0 flex h-full items-center justify-center border-r border-white/40 bg-muted-foreground/30 text-muted-foreground transition-colors hover:bg-accent/40"
-                    style={{ left: `${left}%`, width: `${width}%` }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRestoreGap(gapToPlayGaps(segment));
-                    }}
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                  </button>
-                );
-              }
-
-              const playId = playIdentityKey(segment.play);
-              const isSelected = playId === selectedPlayId;
-              const offenseTone = offenseTimelineTone(
-                segment.play.offenseTeam,
-                homeTeam,
-                awayTeam,
-              );
-
-              return (
-                <button
-                  key={playIdentityKey(segment.play)}
-                  type="button"
-                  title={
-                    segment.play.offenseTeam
-                      ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
-                      : `Play ${segment.playNumber}`
-                  }
-                  className={playTimelineSegmentClass(offenseTone, isSelected)}
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    seekToPlay(playId);
-                  }}
-                >
-                  {width > 4 ? segment.playNumber : ""}
-                </button>
-              );
-            })}
-            <div
-              className="pointer-events-none absolute top-0 z-10 h-full w-0.5 bg-accent shadow-[0_0_6px_rgba(0,0,0,0.35)]"
-              style={{ left: `${playheadPercent}%` }}
-            />
-            <div
-              role="presentation"
-              className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
-              style={{ left: `${playheadPercent}%`, touchAction: "none" }}
-              onPointerDown={onPlayheadPointerDown}
+            <PlayerVideoOverlay
+              playNumber={activeSegment?.playNumber ?? 1}
+              playPosition={playPosition}
+              playDuration={activeSegment?.duration ?? 0}
+              gamePosition={playbackTime}
+              gameDuration={playbackDuration}
             />
           </div>
-          <p className="text-center text-xs text-muted-foreground">
-            Drag the timeline or playhead to scrub — click a play to jump
-            {showGapsOnTimeline && gapSegments.length > 0
-              ? ", gray segments can be restored"
-              : ""}
-          </p>
         </div>
       </div>
 
-      <Card className="surface-card max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col">
-        <CardHeader className="border-b border-border/60 py-3 max-lg:landscape:shrink-0 max-lg:landscape:py-2">
-          <CardTitle className="font-heading text-sm">All plays</CardTitle>
+      <Card className={playerPlayListCardClass}>
+        <CardHeader className="shrink-0 border-b border-border/60 py-3 max-lg:landscape:py-2">
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="font-heading text-sm">All plays</CardTitle>
+            {gapSegments.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 rounded-lg px-2 text-xs"
+                onClick={() => setShowGapsOnTimeline(!showGapsOnTimeline)}
+              >
+                {showGapsOnTimeline ? (
+                  <EyeOff className="mr-1.5 h-3.5 w-3.5" />
+                ) : (
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                {showGapsOnTimeline ? "Hide gaps" : "Show gaps"}
+              </Button>
+            ) : null}
+          </div>
         </CardHeader>
         <CardContent
           ref={playListRef}
-          className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto p-3 max-lg:landscape:max-h-none max-lg:landscape:flex-1 max-lg:landscape:min-h-0 max-lg:landscape:p-2"
+          className={cn(playerPlayListContentClass, "space-y-2 p-3 max-lg:landscape:p-2")}
         >
           {playSegments.length === 0 && gapSegments.length === 0 && (
             <p className="text-sm text-muted-foreground">No plays yet.</p>
           )}
-          {segments.map((segment) => {
+          {playListSegments.map((segment) => {
             if (isGapSegment(segment)) {
               return (
                 <button
@@ -786,6 +967,7 @@ export function PlayEditor({
           })}
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PlayerStage>
   );
 }

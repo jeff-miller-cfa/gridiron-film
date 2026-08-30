@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { games, plays } from "@/db/schema";
+import { snapGameTime } from "@/lib/play-boundaries";
 
 export async function resetGamePlays(gameId: string) {
   const db = getDb();
@@ -23,13 +24,14 @@ export async function resetGamePlays(gameId: string) {
 
   let gameOffset = 0;
   const newPlays = game.videoClips.map((clip) => {
-    const play = {
-      gameId,
-      startTime: gameOffset,
-      endTime: gameOffset + clip.duration,
-    };
+    const startTime = snapGameTime(gameOffset);
     gameOffset += clip.duration;
-    return play;
+    const endTime = snapGameTime(gameOffset);
+    return {
+      gameId,
+      startTime,
+      endTime,
+    };
   });
 
   const inserted =

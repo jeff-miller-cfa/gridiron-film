@@ -4,6 +4,8 @@ export type GameWithRelations = {
   homeTeam: string;
   awayTeam: string;
   gameDateTime: string;
+  playLookbackSeconds: number;
+  viewerAudioMuted: boolean;
   createdAt: string;
   updatedAt: string;
   videoClips: VideoClipRecord[];

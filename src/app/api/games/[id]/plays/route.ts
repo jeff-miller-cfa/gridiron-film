@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { plays } from "@/db/schema";
+import { games, plays } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { normalizeGamePlays } from "@/lib/play-boundaries";
 import { sortPlays } from "@/lib/plays";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -20,15 +21,22 @@ export async function GET(_request: Request, context: RouteContext) {
   const db = getDb();
 
   const game = await db.query.games.findFirst({
-    where: (games, { eq: equals }) => equals(games.id, gameId),
-    with: { plays: true },
+    where: (gamesTable, { eq: equals }) => equals(gamesTable.id, gameId),
+    with: {
+      plays: true,
+      videoClips: {
+        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
+      },
+    },
   });
 
   if (!game) {
     return NextResponse.json({ error: "Game not found" }, { status: 404 });
   }
 
-  return NextResponse.json(sortPlays(game.plays));
+  return NextResponse.json(
+    normalizeGamePlays(sortPlays(game.plays), game.videoClips ?? []),
+  );
 }
 
 export async function PUT(request: Request, context: RouteContext) {
@@ -45,6 +53,15 @@ export async function PUT(request: Request, context: RouteContext) {
   }
 
   const db = getDb();
+  const game = await db.query.games.findFirst({
+    where: eq(games.id, gameId),
+    with: {
+      videoClips: {
+        orderBy: (videoClips, { asc }) => [asc(videoClips.sortOrder)],
+      },
+    },
+  });
+
   const existing = await db.query.plays.findMany({
     where: eq(plays.gameId, gameId),
   });
@@ -63,7 +80,12 @@ export async function PUT(request: Request, context: RouteContext) {
 
   const results = [];
 
-  for (const p of playUpdates) {
+  const normalizedUpdates = normalizeGamePlays(
+    playUpdates,
+    game?.videoClips ?? [],
+  );
+
+  for (const p of normalizedUpdates) {
     const values = {
       startTime: p.startTime,
       endTime: p.endTime,

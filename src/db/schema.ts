@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   pgTable,
   real,
@@ -14,6 +15,8 @@ export const games = pgTable("games", {
   homeTeam: text("home_team").notNull(),
   awayTeam: text("away_team").notNull(),
   gameDateTime: timestamp("game_date_time", { withTimezone: true }).notNull(),
+  playLookbackSeconds: real("play_lookback_seconds").notNull().default(2),
+  viewerAudioMuted: boolean("viewer_audio_muted").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

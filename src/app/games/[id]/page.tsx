@@ -20,7 +20,7 @@ export default async function GameWatchPage({ params }: PageProps) {
 
   return (
     <PageShell>
-      <main className="mx-auto max-w-6xl px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8">
+      <main className="w-full px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8">
         <div className="surface-card mb-8 p-6 max-lg:landscape:hidden">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
             Now watching
@@ -50,6 +50,7 @@ export default async function GameWatchPage({ params }: PageProps) {
           clips={game.videoClips ?? []}
           homeTeam={game.homeTeam}
           awayTeam={game.awayTeam}
+          viewerAudioMuted={game.viewerAudioMuted}
         />
       </main>
     </PageShell>

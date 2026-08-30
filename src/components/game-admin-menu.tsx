@@ -20,7 +20,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Film, MoreHorizontal, RefreshCw, Trash2 } from "lucide-react";
+import { Film, MoreHorizontal, RefreshCw, Settings, Trash2 } from "lucide-react";
 
 type DialogKind = "reset" | "deleteClips" | "deleteGame";
 
@@ -121,6 +121,13 @@ export function GameAdminMenu({
           }
         />
         <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuItem
+            onClick={() => router.push(`/admin/games/${gameId}/settings`)}
+          >
+            <Settings />
+            Game settings
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={clipCount === 0}
             onClick={() => setDialog("reset")}

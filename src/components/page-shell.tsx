@@ -1,3 +1,5 @@
+"use client";
+
 import { SiteHeader } from "@/components/site-header";
 
 type PageShellProps = {
@@ -25,7 +27,9 @@ export function PageShell({ children, variant = "default" }: PageShellProps) {
       </div>
 
       <SiteHeader variant={variant} />
-      {children}
+      <div className="pt-[var(--site-header-offset,4rem)] max-lg:landscape:pt-0">
+        {children}
+      </div>
     </div>
   );
 }

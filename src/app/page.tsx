@@ -18,7 +18,7 @@ export default async function HomePage() {
 
   return (
     <PageShell>
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
+      <main className="w-full px-4 py-8 sm:px-6 sm:py-10">
         <PageHeader
           eyebrow="Film room"
           title="Game library"

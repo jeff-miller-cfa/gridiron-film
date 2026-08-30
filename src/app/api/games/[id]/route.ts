@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { games } from "@/db/schema";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { parseGameUpdateInput } from "@/lib/game-update";
 import { getGameById } from "@/lib/games";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -25,15 +26,18 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   const { id } = await context.params;
   const body = await request.json();
-  const db = getDb();
+  const { data, error } = parseGameUpdateInput(body);
 
+  if (error) {
+    return NextResponse.json({ error }, { status: 400 });
+  }
+
+  const db = getDb();
   const [updated] = await db
     .update(games)
     .set({
-      ...body,
-      gameDateTime: body.gameDateTime
-        ? new Date(body.gameDateTime)
-        : undefined,
+      ...data,
+      gameDateTime: data.gameDateTime ? new Date(data.gameDateTime) : undefined,
       updatedAt: new Date(),
     })
     .where(eq(games.id, id))
@@ -43,7 +47,8 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Game not found" }, { status: 404 });
   }
 
-  return NextResponse.json(updated);
+  const game = await getGameById(id);
+  return NextResponse.json(game ?? updated);
 }
 
 export async function DELETE(_request: Request, context: RouteContext) {

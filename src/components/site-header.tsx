@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { AdminLogoutButton } from "@/components/admin-logout-button";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -14,10 +15,54 @@ type SiteHeaderProps = {
 export function SiteHeader({ variant = "default" }: SiteHeaderProps) {
   const pathname = usePathname();
   const isAdmin = pathname.startsWith("/admin");
+  const headerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+
+    const landscapeMobile = window.matchMedia(
+      "(max-width: 1023px) and (orientation: landscape)",
+    );
+
+    const syncHeaderOffset = () => {
+      if (landscapeMobile.matches) {
+        document.documentElement.style.setProperty("--site-header-offset", "0px");
+        return;
+      }
+
+      const height = Math.ceil(header.getBoundingClientRect().height);
+      document.documentElement.style.setProperty(
+        "--site-header-offset",
+        `${height}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--site-header-height",
+        `${height}px`,
+      );
+    };
+
+    syncHeaderOffset();
+
+    const observer = new ResizeObserver(syncHeaderOffset);
+    observer.observe(header);
+    landscapeMobile.addEventListener("change", syncHeaderOffset);
+    window.addEventListener("resize", syncHeaderOffset);
+
+    return () => {
+      observer.disconnect();
+      landscapeMobile.removeEventListener("change", syncHeaderOffset);
+      window.removeEventListener("resize", syncHeaderOffset);
+    };
+  }, []);
 
   return (
-    <header className="sticky top-0 z-50 border-b border-border/60 bg-card/90 shadow-sm backdrop-blur-md max-lg:landscape:static max-lg:landscape:shadow-none">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 max-lg:landscape:h-11 max-lg:landscape:px-3 sm:px-6">
+    <header
+      ref={headerRef}
+      data-site-header
+      className="fixed inset-x-0 top-0 z-50 box-border h-16 border-b border-border/60 bg-card/90 backdrop-blur-md max-lg:landscape:static max-lg:landscape:h-11 max-lg:landscape:shadow-none"
+    >
+      <div className="flex h-full w-full items-center justify-between px-4 max-lg:landscape:px-3 sm:px-6">
         <Link
           href="/"
           className="group flex items-center gap-3 font-semibold tracking-tight"

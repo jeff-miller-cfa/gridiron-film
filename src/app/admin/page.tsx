@@ -14,7 +14,7 @@ export default async function AdminDashboardPage() {
 
   return (
     <PageShell variant="admin">
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
+      <main className="w-full px-4 py-8 sm:px-6 sm:py-10">
         <PageHeader
           eyebrow="Administration"
           title="Manage games"

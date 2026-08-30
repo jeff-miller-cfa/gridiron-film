@@ -278,6 +278,24 @@ export function findActiveSegmentAtGameTime(
   return matches.sort((a, b) => a.globalStart - b.globalStart)[0] ?? null;
 }
 
+/** Prefer an explicitly selected play so overlapping segments honor the shorter boundary. */
+export function resolvePlaybackSegment(
+  gameTime: number,
+  playSegments: TimelinePlaySegment[],
+  preferredPlayKey: string | null = null,
+): TimelinePlaySegment | null {
+  if (preferredPlayKey) {
+    const preferred = playSegments.find(
+      (segment) => playIdentityKey(segment.play) === preferredPlayKey,
+    );
+    if (preferred && gameTime >= preferred.globalStart - 0.05) {
+      return preferred;
+    }
+  }
+
+  return findActiveSegmentAtGameTime(gameTime, playSegments);
+}
+
 export function clipTimeToPlaybackTime(
   clipId: string,
   localTime: number,

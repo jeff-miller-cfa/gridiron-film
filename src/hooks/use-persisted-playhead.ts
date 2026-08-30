@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const TIME_PARAM = "t";
-const LEGACY_CLIP_PARAM = "clip";
 
 export type PersistedPlayhead = {
   gameTime: number;
@@ -30,24 +29,44 @@ export function usePersistedPlayhead() {
   const lastWrittenRef = useRef<string | null>(null);
 
   const persisted = parsePersistedPlayhead(searchParams);
-  const hasLegacyClipParam = searchParams.has(LEGACY_CLIP_PARAM);
 
-  const persistPlayhead = useCallback(
-    (gameTime: number) => {
+  const writePlayhead = useCallback(
+    (gameTime: number, immediate = false) => {
       const rounded = Math.round(gameTime * 10) / 10;
       const key = String(rounded);
       if (key === lastWrittenRef.current) return;
 
-      if (pendingRef.current) clearTimeout(pendingRef.current);
-      pendingRef.current = setTimeout(() => {
+      const commit = () => {
         const next = new URLSearchParams(searchParams.toString());
-        next.delete(LEGACY_CLIP_PARAM);
         next.set(TIME_PARAM, String(rounded));
         lastWrittenRef.current = key;
         router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-      }, 400);
+      };
+
+      if (immediate) {
+        if (pendingRef.current) clearTimeout(pendingRef.current);
+        commit();
+        return;
+      }
+
+      if (pendingRef.current) clearTimeout(pendingRef.current);
+      pendingRef.current = setTimeout(commit, 400);
     },
     [pathname, router, searchParams],
+  );
+
+  const persistPlayhead = useCallback(
+    (gameTime: number) => {
+      writePlayhead(gameTime, false);
+    },
+    [writePlayhead],
+  );
+
+  const flushPlayhead = useCallback(
+    (gameTime: number) => {
+      writePlayhead(gameTime, true);
+    },
+    [writePlayhead],
   );
 
   useEffect(() => {
@@ -56,5 +75,5 @@ export function usePersistedPlayhead() {
     };
   }, []);
 
-  return { persisted, hasLegacyClipParam, persistPlayhead };
+  return { persisted, persistPlayhead, flushPlayhead };
 }

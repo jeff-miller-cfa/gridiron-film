@@ -12,32 +12,48 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { formatDuration } from "@/lib/video";
+import { playIdentityKey } from "@/lib/plays";
 import {
   buildTimelines,
   findActiveSegmentAtGameTime,
+  resolvePlaybackSegment,
   gameTimeToPlaybackTime,
-  isGapSegment,
   playIndexToPlaybackTime,
-  playbackTimeToClipTime,
   resolveClipIdFromVideo,
   segmentGameTime,
 } from "@/lib/player-timeline";
 import { clipTimeToGameTime, gameTimeToClipTime } from "@/lib/clip-layout";
 import { usePersistedPlayhead } from "@/hooks/use-persisted-playhead";
+import { useElementWidth } from "@/hooks/use-element-width";
 import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
+import { shouldShowTimelinePlayNumber } from "@/lib/timeline-labels";
 import {
+  offenseTeamBadgeClass,
   offenseTimelineTone,
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
 import type { PlayRecord, VideoClipRecord } from "@/types";
 import { List, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  PlayerStage,
+  playerMainGridClass,
+  playerPlayListCardClass,
+  playerPlayListContentClass,
+  playerVideoClass,
+  playerVideoColumnClass,
+  playerVideoFrameClass,
+  playerVideoShellClass,
+} from "@/components/player-stage";
+import { PlayerLoopToggle } from "@/components/player-loop-toggle";
+import { PlayerVideoOverlay } from "@/components/player-video-overlay";
 
 type GamePlayerProps = {
   plays: PlayRecord[];
   homeTeam: string;
   awayTeam: string;
   clips: VideoClipRecord[];
+  viewerAudioMuted?: boolean;
 };
 
 export function GamePlayer({
@@ -45,9 +61,11 @@ export function GamePlayer({
   homeTeam,
   awayTeam,
   clips,
+  viewerAudioMuted = false,
 }: GamePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineWidth = useElementWidth(timelineRef);
   const seekingRef = useRef(false);
   const isPlayingRef = useRef(false);
   const currentIndexRef = useRef(0);
@@ -62,7 +80,7 @@ export function GamePlayer({
     [clips],
   );
 
-  const { segments, playbackDuration, playSegments } = useMemo(
+  const { playbackDuration, playSegments } = useMemo(
     () => buildTimelines(clips, plays),
     [clips, plays],
   );
@@ -70,6 +88,9 @@ export function GamePlayer({
   const [playbackTime, setPlaybackTime] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [loopPlay, setLoopPlay] = useState(false);
+  const loopPlayRef = useRef(false);
+  loopPlayRef.current = loopPlay;
 
   const currentSegment =
     playSegments.find((s) => s.playIndex === currentIndex) ?? playSegments[0];
@@ -78,11 +99,21 @@ export function GamePlayer({
   isPlayingRef.current = isPlaying;
 
   const seekToPlaybackTime = useCallback(
-    (time: number, autoplay = false): Promise<void> => {
+    (
+      time: number,
+      autoplay = false,
+      preferredPlayKey: string | null = null,
+    ): Promise<void> => {
       const video = videoRef.current;
-      const segment = playSegments.find(
-        (s) => time >= s.playbackStart && time < s.playbackEnd,
-      );
+      const segment =
+        (preferredPlayKey
+          ? playSegments.find(
+              (row) => playIdentityKey(row.play) === preferredPlayKey,
+            )
+          : null) ??
+        playSegments.find(
+          (s) => time >= s.playbackStart && time < s.playbackEnd,
+        );
       if (!video || !segment) return Promise.resolve();
 
       const clamped = Math.max(
@@ -90,25 +121,23 @@ export function GamePlayer({
         Math.min(time, playbackDuration > 0 ? playbackDuration - 0.001 : 0),
       );
 
-      const clipTime = playbackTimeToClipTime(clamped, playSegments, clips);
-      if (!clipTime) return Promise.resolve();
+      const gameTime = segmentGameTime(clamped, segment);
+      const located = gameTimeToClipTime(gameTime, clips);
+      if (!located) return Promise.resolve();
 
-      const clip = clips.find((row) => row.id === clipTime.clipId);
-      if (!clip) return Promise.resolve();
-
-      const localTime = clipTime.time;
+      const clip = located.clip;
+      const localTime = located.localTime;
       const clipUrl = clip.blobUrl;
-      const clipId = clipTime.clipId;
-      const previousClipId = loadedClipIdRef.current;
+      const clipId = located.clipId;
+      const previousClipId = resolveClipIdFromVideo(video, clipSources);
       const seekToken = ++seekTokenRef.current;
 
       seekingRef.current = true;
       setPlaybackTime(clamped);
       setCurrentIndex(segment.playIndex);
       currentIndexRef.current = segment.playIndex;
-      loadedClipIdRef.current = clipId;
 
-      persistPlayhead(segmentGameTime(clamped, segment));
+      persistPlayhead(gameTime);
 
       return new Promise((resolve) => {
         let seekApplied = false;
@@ -133,6 +162,7 @@ export function GamePlayer({
         const finish = () => {
           if (seekToken !== seekTokenRef.current) return;
           seekingRef.current = false;
+          loadedClipIdRef.current = clipId;
           resumePlayback();
           resolve();
         };
@@ -176,9 +206,14 @@ export function GamePlayer({
 
   const seekToPlay = useCallback(
     (playIndex: number, autoplay = true) => {
-      const playback = playIndexToPlaybackTime(playIndex, playSegments);
+      const segment = playSegments.find((s) => s.playIndex === playIndex);
+      const playback = segment?.playbackStart ?? playIndexToPlaybackTime(playIndex, playSegments);
       if (playback === null) return;
-      void seekToPlaybackTime(playback, autoplay);
+      void seekToPlaybackTime(
+        playback,
+        autoplay,
+        segment ? playIdentityKey(segment.play) : null,
+      );
     },
     [playSegments, seekToPlaybackTime],
   );
@@ -209,8 +244,7 @@ export function GamePlayer({
       if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
       const local = video.currentTime;
-      const clipId =
-        loadedClipIdRef.current ?? resolveClipIdFromVideo(video, clipSources);
+      const clipId = resolveClipIdFromVideo(video, clipSources);
       if (!clipId) return;
 
       loadedClipIdRef.current = clipId;
@@ -218,10 +252,22 @@ export function GamePlayer({
       const gameTime = clipTimeToGameTime(clipId, local, clips);
       if (gameTime === null) return;
 
-      const segment = findActiveSegmentAtGameTime(gameTime, playSegments);
+      const preferredSegment = playSegments.find(
+        (row) => row.playIndex === currentIndexRef.current,
+      );
+      const segment = resolvePlaybackSegment(
+        gameTime,
+        playSegments,
+        preferredSegment ? playIdentityKey(preferredSegment.play) : null,
+      );
       if (!segment) return;
 
       if (gameTime >= segment.globalEnd - 0.08) {
+        if (loopPlayRef.current) {
+          void seekToPlaybackTime(segment.playbackStart, isPlayingRef.current);
+          return;
+        }
+
         const segIdx = playSegments.indexOf(segment);
         const next = playSegments[segIdx + 1];
         if (next) {
@@ -288,25 +334,15 @@ export function GamePlayer({
       },
     });
 
-  const renderPlayList = (includeGaps: boolean) => (
-    <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto max-lg:landscape:max-h-none max-lg:landscape:flex-1 md:max-h-[calc(100vh-280px)]">
-      {(includeGaps ? segments : playSegments).map((segment) => {
-        if (isGapSegment(segment)) {
-          return (
-            <div
-              key={`gap-${segment.globalStart}-${segment.globalEnd}`}
-              className="rounded-lg border border-dashed border-muted-foreground/35 bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium uppercase tracking-wide">Gap</span>
-                <span className="tabular-nums">
-                  {formatDuration(segment.duration)}
-                </span>
-              </div>
-            </div>
-          );
-        }
-
+  const renderPlayList = (constrained = false) => (
+    <div
+      className={cn(
+        "flex flex-col gap-2",
+        constrained &&
+          "max-h-[50vh] overflow-y-auto md:max-h-[calc(100vh-280px)]",
+      )}
+    >
+      {playSegments.map((segment) => {
         const index = segment.playIndex;
         const play = segment.play;
 
@@ -323,18 +359,26 @@ export function GamePlayer({
             )}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-foreground max-lg:landscape:text-sm">
-                Play {segment.playNumber}
-              </span>
-              <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="shrink-0 font-semibold text-foreground max-lg:landscape:text-sm">
+                  Play {segment.playNumber}
+                </span>
+                {play.offenseTeam ? (
+                  <span
+                    className={offenseTeamBadgeClass(
+                      play.offenseTeam,
+                      homeTeam,
+                      awayTeam,
+                    )}
+                  >
+                    {play.offenseTeam}
+                  </span>
+                ) : null}
+              </div>
+              <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {formatDuration(segment.duration)}
               </span>
             </div>
-            {play.offenseTeam && (
-              <p className="mt-1.5 text-xs font-medium text-accent max-lg:landscape:mt-1 max-lg:landscape:line-clamp-1">
-                Offense: {play.offenseTeam}
-              </p>
-            )}
             {play.notes && (
               <p className="mt-1 line-clamp-2 text-xs text-muted-foreground max-lg:landscape:line-clamp-1">
                 {play.notes}
@@ -358,121 +402,152 @@ export function GamePlayer({
 
   const currentPlayNumber =
     currentSegment?.playNumber ?? currentIndex + 1;
+  const playPosition = currentSegment
+    ? Math.max(
+        0,
+        Math.min(
+          currentSegment.duration,
+          playbackTime - currentSegment.playbackStart,
+        ),
+      )
+    : 0;
+
+  const timelinePanel = (
+    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:py-3">
+      <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+        <span>{formatDuration(playbackTime)}</span>
+        <span>{formatDuration(playbackDuration)}</span>
+      </div>
+      <div
+        ref={timelineRef}
+        role="slider"
+        aria-label="Game timeline"
+        aria-valuemin={0}
+        aria-valuemax={playbackDuration}
+        aria-valuenow={playbackTime}
+        tabIndex={0}
+        className="relative h-10 max-lg:landscape:h-9 sm:h-11 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
+        onPointerDown={onTimelinePointerDown}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight") {
+            void seekToPlaybackTime(
+              Math.min(playbackTime + 5, playbackDuration),
+              isPlaying,
+            );
+          }
+          if (e.key === "ArrowLeft") {
+            void seekToPlaybackTime(Math.max(playbackTime - 5, 0), isPlaying);
+          }
+        }}
+      >
+        {playSegments.map((segment) => {
+          const left =
+            playbackDuration > 0
+              ? (segment.playbackStart / playbackDuration) * 100
+              : 0;
+          const width =
+            playbackDuration > 0
+              ? (segment.duration / playbackDuration) * 100
+              : 0;
+
+          const isActive = segment.playIndex === currentIndex;
+          const offenseTone = offenseTimelineTone(
+            segment.play.offenseTeam,
+            homeTeam,
+            awayTeam,
+          );
+
+          return (
+            <button
+              key={segment.play.id}
+              type="button"
+              title={
+                segment.play.offenseTeam
+                  ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
+                  : `Play ${segment.playNumber}`
+              }
+              className={playTimelineSegmentClass(offenseTone, isActive)}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              onClick={(e) => {
+                e.stopPropagation();
+                seekToPlay(segment.playIndex, true);
+              }}
+            >
+              {shouldShowTimelinePlayNumber(
+                width,
+                timelineWidth,
+                segment.playNumber,
+                isActive,
+              ) ? (
+                <span className="tabular-nums">{segment.playNumber}</span>
+              ) : null}
+            </button>
+          );
+        })}
+        <div
+          className="pointer-events-none absolute top-0 z-10 h-full w-0.5 bg-accent shadow-[0_0_6px_rgba(0,0,0,0.35)]"
+          style={{ left: `${playheadPercent}%` }}
+        />
+        <div
+          role="presentation"
+          className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
+          style={{ left: `${playheadPercent}%`, touchAction: "none" }}
+          onPointerDown={onPlayheadPointerDown}
+        />
+      </div>
+      <p className="text-center text-xs text-muted-foreground max-lg:landscape:hidden">
+        Drag the timeline or playhead to scrub
+      </p>
+    </div>
+  );
 
   return (
-    <div className="grid gap-6 max-lg:portrait:grid-cols-1 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,36%)] max-lg:landscape:items-stretch max-lg:landscape:gap-2 lg:grid-cols-[1fr_340px]">
-      <div className="space-y-4 max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-2">
-        <div className="surface-elevated overflow-hidden p-1 max-lg:landscape:min-h-0 max-lg:landscape:flex-1">
-          <div className="relative overflow-hidden rounded-xl bg-slate-900 max-lg:landscape:h-full">
+    <PlayerStage>
+      {timelinePanel}
+
+      <div className={playerMainGridClass}>
+      <div className={playerVideoColumnClass}>
+        <div className={playerVideoShellClass}>
+          <div className={playerVideoFrameClass}>
             <video
               ref={videoRef}
-              className="aspect-video w-full max-lg:landscape:aspect-auto max-lg:landscape:h-full max-lg:landscape:object-contain"
+              className={playerVideoClass}
               playsInline
               preload="auto"
               controls={false}
+              muted={viewerAudioMuted}
               onClick={togglePlay}
             />
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-primary/95 via-primary/70 to-transparent px-5 py-4 max-lg:landscape:px-3 max-lg:landscape:py-2">
-              <div className="flex items-center justify-between gap-2 text-sm text-white">
-                <span className="font-heading text-lg font-bold max-lg:landscape:text-base">
-                  Play {currentPlayNumber}
-                </span>
-                {currentPlay?.offenseTeam && (
+            <PlayerLoopToggle
+              enabled={loopPlay}
+              onChange={setLoopPlay}
+              className="absolute top-3 right-3 z-10 max-lg:landscape:top-2 max-lg:landscape:right-2"
+            />
+            <PlayerVideoOverlay
+              playNumber={currentPlayNumber}
+              playPosition={playPosition}
+              playDuration={currentSegment?.duration ?? 0}
+              gamePosition={playbackTime}
+              gameDuration={playbackDuration}
+              trailing={
+                currentPlay?.offenseTeam ? (
                   <Badge className="border-0 bg-white/20 text-white backdrop-blur-sm">
                     {currentPlay.offenseTeam}
                   </Badge>
-                )}
-              </div>
-              {currentPlay?.notes && (
-                <p className="mt-1 line-clamp-1 text-sm text-white/85 max-lg:landscape:text-xs">
-                  {currentPlay.notes}
-                </p>
-              )}
-            </div>
+                ) : null
+              }
+              footer={
+                currentPlay?.notes ? (
+                  <p className="mt-1 line-clamp-1 text-sm text-white/85 max-lg:landscape:text-xs">
+                    {currentPlay.notes}
+                  </p>
+                ) : null
+              }
+            />
           </div>
         </div>
 
-        <div className="surface-card space-y-2 p-4 max-lg:landscape:hidden">
-          <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
-            <span>{formatDuration(playbackTime)}</span>
-            <span>{formatDuration(playbackDuration)}</span>
-          </div>
-          <div
-            ref={timelineRef}
-            role="slider"
-            aria-label="Game timeline"
-            aria-valuemin={0}
-            aria-valuemax={playbackDuration}
-            aria-valuenow={playbackTime}
-            tabIndex={0}
-            className="relative h-12 cursor-pointer touch-none overflow-hidden rounded-xl border border-border/80 bg-muted/40 select-none"
-            onPointerDown={onTimelinePointerDown}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowRight") {
-                void seekToPlaybackTime(
-                  Math.min(playbackTime + 5, playbackDuration),
-                  isPlaying,
-                );
-              }
-              if (e.key === "ArrowLeft") {
-                void seekToPlaybackTime(Math.max(playbackTime - 5, 0), isPlaying);
-              }
-            }}
-          >
-            {playSegments.map((segment) => {
-              const left =
-                playbackDuration > 0
-                  ? (segment.playbackStart / playbackDuration) * 100
-                  : 0;
-              const width =
-                playbackDuration > 0
-                  ? (segment.duration / playbackDuration) * 100
-                  : 0;
-
-              const isActive = segment.playIndex === currentIndex;
-              const offenseTone = offenseTimelineTone(
-                segment.play.offenseTeam,
-                homeTeam,
-                awayTeam,
-              );
-
-              return (
-                <button
-                  key={segment.play.id}
-                  type="button"
-                  title={
-                    segment.play.offenseTeam
-                      ? `Play ${segment.playNumber} · ${segment.play.offenseTeam}`
-                      : `Play ${segment.playNumber}`
-                  }
-                  className={playTimelineSegmentClass(offenseTone, isActive)}
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    seekToPlay(segment.playIndex, true);
-                  }}
-                >
-                  {width > 4 ? segment.playNumber : ""}
-                </button>
-              );
-            })}
-            <div
-              className="pointer-events-none absolute top-0 z-10 h-full w-0.5 bg-accent shadow-[0_0_6px_rgba(0,0,0,0.35)]"
-              style={{ left: `${playheadPercent}%` }}
-            />
-            <div
-              role="presentation"
-              className="absolute top-1/2 z-20 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-card bg-accent shadow-md active:cursor-grabbing"
-              style={{ left: `${playheadPercent}%`, touchAction: "none" }}
-              onPointerDown={onPlayheadPointerDown}
-            />
-          </div>
-          <p className="text-center text-xs text-muted-foreground">
-            Drag the timeline or playhead to scrub
-          </p>
-        </div>
-
-        <div className="surface-card flex items-center justify-between gap-3 p-4 max-lg:landscape:shrink-0 max-lg:landscape:px-3 max-lg:landscape:py-2">
+        <div className="surface-card flex shrink-0 items-center justify-between gap-3 p-4 max-lg:landscape:px-3 max-lg:landscape:py-2">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -533,7 +608,7 @@ export function GamePlayer({
           </p>
         </div>
 
-        <div className="hidden max-lg:portrait:block">
+        <div className="hidden shrink-0 max-lg:portrait:block">
           <Sheet>
             <SheetTrigger
               className={buttonVariants({
@@ -550,22 +625,23 @@ export function GamePlayer({
                   {awayTeam} @ {homeTeam}
                 </SheetTitle>
               </SheetHeader>
-              <div className="mt-4">{renderPlayList(false)}</div>
+              <div className="mt-4">{renderPlayList(true)}</div>
             </SheetContent>
           </Sheet>
         </div>
       </div>
 
-      <Card className="surface-card hidden max-lg:landscape:flex max-lg:landscape:max-h-[calc(100dvh-3.5rem)] max-lg:landscape:min-h-0 max-lg:landscape:flex-col lg:flex">
-        <CardHeader className="border-b border-border/60 pb-4 max-lg:landscape:shrink-0 max-lg:landscape:py-2 max-lg:landscape:pb-2">
+      <Card className={cn(playerPlayListCardClass, "hidden max-lg:landscape:flex lg:flex")}>
+        <CardHeader className="shrink-0 border-b border-border/60 pb-4 max-lg:landscape:py-2 max-lg:landscape:pb-2">
           <CardTitle className="font-heading text-lg max-lg:landscape:text-sm">
             Play list
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 max-lg:landscape:p-2">
-          {renderPlayList(true)}
+        <CardContent className={cn(playerPlayListContentClass, "p-4 max-lg:landscape:p-2")}>
+          {renderPlayList()}
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PlayerStage>
   );
 }

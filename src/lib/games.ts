@@ -1,7 +1,22 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { games } from "@/db/schema";
+import { normalizePlayLookbackSeconds } from "@/lib/game-settings";
+import { normalizeGamePlays } from "@/lib/play-boundaries";
 import { sortPlays } from "@/lib/plays";
+
+function normalizeGameRecord<T extends {
+  playLookbackSeconds?: number | null;
+  viewerAudioMuted?: boolean | null;
+}>(game: T) {
+  return {
+    ...game,
+    playLookbackSeconds: normalizePlayLookbackSeconds(
+      game.playLookbackSeconds ?? undefined,
+    ),
+    viewerAudioMuted: Boolean(game.viewerAudioMuted),
+  };
+}
 
 export async function getAllGames() {
   const db = getDb();
@@ -16,8 +31,8 @@ export async function getAllGames() {
   });
 
   return results.map((game) => ({
-    ...game,
-    plays: sortPlays(game.plays),
+    ...normalizeGameRecord(game),
+    plays: normalizeGamePlays(sortPlays(game.plays), game.videoClips ?? []),
   }));
 }
 
@@ -36,7 +51,7 @@ export async function getGameById(id: string) {
   if (!game) return null;
 
   return {
-    ...game,
-    plays: sortPlays(game.plays),
+    ...normalizeGameRecord(game),
+    plays: normalizeGamePlays(sortPlays(game.plays), game.videoClips ?? []),
   };
 }
