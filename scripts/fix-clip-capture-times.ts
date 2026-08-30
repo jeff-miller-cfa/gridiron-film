@@ -14,18 +14,21 @@
  * NEW layout, preserving its duration and clip association.
  *
  * DRY RUN BY DEFAULT — pass --apply to write. A JSON backup of the affected
- * clips and plays is written before any changes.
+ * clips and plays is written before any changes, and can be replayed with
+ * --revert to restore that exact snapshot if something looks wrong.
  *
  * Requires: ffprobe on PATH, DATABASE_URL in .env.local.
  *
  * Usage:
  *   npm run fix-clip-capture-times -- <gameId> --source <dir>            # dry run
- *   npm run fix-clip-capture-times -- <gameId> --source <dir> --apply    # write
+ *   npm run fix-clip-capture-times -- <gameId> --source <dir> --apply    # write (+ backup)
+ *   npm run fix-clip-capture-times -- --revert <backupFile>              # dry run
+ *   npm run fix-clip-capture-times -- --revert <backupFile> --apply      # restore
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
 import { eq } from "drizzle-orm";
 import { getDb } from "../src/db";
@@ -134,25 +137,158 @@ function mmss(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function flagValue(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 ? args[idx + 1] : undefined;
+}
+
+type BackupFile = {
+  gameId: string;
+  takenAt: string;
+  clips: { id: string; filename: string; capturedAt: string; sortOrder: number }[];
+  plays: { id: string; startTime: number; endTime: number }[];
+};
+
+/**
+ * Restore clips (capturedAt, sortOrder) and plays (startTime, endTime) to the
+ * exact snapshot captured in a backup file written by an --apply run.
+ */
+async function runRevert(
+  db: ReturnType<typeof getDb>,
+  backupPath: string,
+  apply: boolean,
+) {
+  const raw = await readFile(backupPath, "utf8");
+  const backup = JSON.parse(raw) as BackupFile;
+  if (!backup.gameId || !Array.isArray(backup.clips) || !Array.isArray(backup.plays)) {
+    throw new Error(`"${backupPath}" is not a valid migration backup`);
+  }
+
+  console.log(`\n${apply ? "APPLY REVERT" : "DRY RUN (revert)"} — game ${backup.gameId}`);
+  console.log(`Backup taken: ${backup.takenAt}`);
+  console.log(`Backup file:  ${backupPath}`);
+
+  const clips = await db.query.videoClips.findMany({
+    where: eq(videoClips.gameId, backup.gameId),
+  });
+  const plays = await db.query.plays.findMany({
+    where: eq(playsTable.gameId, backup.gameId),
+  });
+  const clipById = new Map(clips.map((c) => [c.id, c]));
+  const playById = new Map(plays.map((p) => [p.id, p]));
+
+  const clipRestores: { id: string; capturedAt: Date; sortOrder: number }[] = [];
+  const missingClips: string[] = [];
+  for (const bc of backup.clips) {
+    const cur = clipById.get(bc.id);
+    if (!cur) {
+      missingClips.push(bc.filename ?? bc.id);
+      continue;
+    }
+    const capturedAt = new Date(bc.capturedAt);
+    if (
+      new Date(cur.capturedAt).getTime() !== capturedAt.getTime() ||
+      cur.sortOrder !== bc.sortOrder
+    ) {
+      clipRestores.push({ id: bc.id, capturedAt, sortOrder: bc.sortOrder });
+    }
+  }
+
+  const playRestores: { id: string; startTime: number; endTime: number }[] = [];
+  const missingPlays: string[] = [];
+  const backupPlayIds = new Set(backup.plays.map((p) => p.id));
+  for (const bp of backup.plays) {
+    const cur = playById.get(bp.id);
+    if (!cur) {
+      missingPlays.push(bp.id);
+      continue;
+    }
+    if (cur.startTime !== bp.startTime || cur.endTime !== bp.endTime) {
+      playRestores.push({ id: bp.id, startTime: bp.startTime, endTime: bp.endTime });
+    }
+  }
+  const addedSince = plays.filter((p) => !backupPlayIds.has(p.id));
+
+  console.log(`\nClips to restore: ${clipRestores.length}/${backup.clips.length}`);
+  console.log(`Plays to restore: ${playRestores.length}/${backup.plays.length}`);
+  if (missingClips.length) {
+    console.log(`⚠ ${missingClips.length} backup clip(s) no longer exist: ${missingClips.join(", ")}`);
+  }
+  if (missingPlays.length) {
+    console.log(`⚠ ${missingPlays.length} backup play(s) no longer exist (deleted since apply) — cannot restore.`);
+  }
+  if (addedSince.length) {
+    console.log(
+      `⚠ ${addedSince.length} play(s) were created AFTER the backup. They are left as-is; because their times were set against the migrated clip order, they may be misaligned once clips are reverted. Review them after reverting.`,
+    );
+  }
+
+  if (!apply) {
+    console.log("\nDRY RUN complete — no changes written. Re-run with --apply to restore.");
+    return;
+  }
+
+  const now = new Date();
+  const statements = [
+    ...clipRestores.map((u) =>
+      db
+        .update(videoClips)
+        .set({ capturedAt: u.capturedAt, sortOrder: u.sortOrder })
+        .where(eq(videoClips.id, u.id)),
+    ),
+    ...playRestores.map((u) =>
+      db
+        .update(playsTable)
+        .set({ startTime: u.startTime, endTime: u.endTime, updatedAt: now })
+        .where(eq(playsTable.id, u.id)),
+    ),
+  ];
+
+  if (statements.length === 0) {
+    console.log("\nNothing to restore — current state already matches the backup.");
+    return;
+  }
+
+  await db.batch(statements as unknown as [(typeof statements)[number]]);
+  console.log(
+    `\nREVERTED — restored ${clipRestores.length} clips and ${playRestores.length} plays to the backup snapshot.`,
+  );
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const apply = args.includes("--apply");
-  const gameId = args.find((a) => !a.startsWith("--"));
-  const sourceIdx = args.indexOf("--source");
-  const sourceDir = sourceIdx >= 0 ? args[sourceIdx + 1] : undefined;
+  const sourceDir = flagValue(args, "--source");
+  const revertPath = flagValue(args, "--revert");
 
-  if (!gameId || !sourceDir) {
-    throw new Error(
-      "Usage: npm run fix-clip-capture-times -- <gameId> --source <dir> [--apply]",
-    );
-  }
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required");
   }
 
-  await execFileAsync("ffprobe", ["-version"]);
-
   const db = getDb();
+
+  // ---- Revert mode ---------------------------------------------------------
+  if (revertPath) {
+    await runRevert(db, revertPath, apply);
+    return;
+  }
+
+  // ---- Forward migration ---------------------------------------------------
+  // gameId is the only positional arg that isn't a flag's value.
+  const flagValues = new Set(
+    [sourceDir, revertPath].filter((v): v is string => Boolean(v)),
+  );
+  const gameId = args.find((a) => !a.startsWith("--") && !flagValues.has(a));
+
+  if (!gameId || !sourceDir) {
+    throw new Error(
+      "Usage:\n" +
+        "  fix-clip-capture-times <gameId> --source <dir> [--apply]   # migrate\n" +
+        "  fix-clip-capture-times --revert <backupFile> [--apply]     # undo",
+    );
+  }
+
+  await execFileAsync("ffprobe", ["-version"]);
 
   const clips = await db.query.videoClips.findMany({
     where: eq(videoClips.gameId, gameId),
@@ -263,16 +399,23 @@ async function main() {
   const playUpdates: { id: string; startTime: number; endTime: number }[] = [];
   let playsChanged = 0;
   let boundaryCrossers = 0;
+  let localPreserved = 0;
+  const localMismatches: string[] = [];
   const samples: string[] = [];
 
   for (const play of plays as PlayRow[]) {
+    // Resolve the play to its clip + local offsets under the OLD (current) layout.
     const startRes = resolveClip(
       play.startTime,
       oldOrdered,
       oldLayout.offsets,
       oldLayout.fullDuration,
     );
-    // Detect (report only) plays that spanned more than one clip in the old layout.
+    const oldClipStart = oldLayout.offsets.get(startRes.clip.id)!.gameStart;
+    const oldLocalStart = snap(play.startTime - oldClipStart);
+    const oldLocalEnd = snap(play.endTime - oldClipStart);
+
+    // Detect plays that spanned more than one clip in the old layout.
     const endResForCheck = resolveClip(
       Math.max(play.startTime, play.endTime - 0.001),
       oldOrdered,
@@ -281,17 +424,41 @@ async function main() {
     );
     if (endResForCheck.clip.id !== startRes.clip.id) boundaryCrossers++;
 
-    const duration = snap(play.endTime - play.startTime);
+    // Re-project into the NEW layout: same clip, same local offsets.
     const newClipStart = newLayout.offsets.get(startRes.clip.id)!.gameStart;
-    const newStart = snap(newClipStart + startRes.local);
-    const newEnd = snap(newStart + duration);
+    const newStart = snap(newClipStart + oldLocalStart);
+    const newEnd = snap(newClipStart + oldLocalEnd);
+    const duration = snap(play.endTime - play.startTime);
 
     if (newStart !== play.startTime || newEnd !== play.endTime) playsChanged++;
     playUpdates.push({ id: play.id, startTime: newStart, endTime: newEnd });
 
-    if (samples.length < 8 && (newStart !== play.startTime)) {
+    // PROOF: re-resolve the new game-times against the NEW layout and confirm
+    // the play lands in the SAME clip at the SAME local offsets it had before.
+    const newStartRes = resolveClip(
+      newStart,
+      newOrdered,
+      newLayout.offsets,
+      newLayout.fullDuration,
+    );
+    const newClipStartAfter = newLayout.offsets.get(newStartRes.clip.id)!.gameStart;
+    const newLocalStart = snap(newStart - newClipStartAfter);
+    const newLocalEnd = snap(newEnd - newClipStartAfter);
+    const sameClip = newStartRes.clip.id === startRes.clip.id;
+    const sameLocal =
+      Math.abs(newLocalStart - oldLocalStart) <= 0.002 &&
+      Math.abs(newLocalEnd - oldLocalEnd) <= 0.002;
+    if (sameClip && sameLocal) {
+      localPreserved++;
+    } else {
+      localMismatches.push(
+        `play ${play.id}: ${startRes.clip.filename}@${oldLocalStart.toFixed(3)}-${oldLocalEnd.toFixed(3)} -> ${newStartRes.clip.filename}@${newLocalStart.toFixed(3)}-${newLocalEnd.toFixed(3)}`,
+      );
+    }
+
+    if (samples.length < 8 && newStart !== play.startTime) {
       samples.push(
-        `  ${startRes.clip.filename} @+${startRes.local.toFixed(1)}s  game ${mmss(play.startTime)}–${mmss(play.endTime)} -> ${mmss(newStart)}–${mmss(newEnd)}  (dur ${duration.toFixed(1)}s kept)`,
+        `  ${startRes.clip.filename} @${oldLocalStart.toFixed(1)}s (unchanged)  game ${mmss(play.startTime)}–${mmss(play.endTime)} -> ${mmss(newStart)}–${mmss(newEnd)}  (dur ${duration.toFixed(1)}s kept)`,
       );
     }
   }
@@ -305,6 +472,12 @@ async function main() {
       ? "  ✓ 0 plays span more than one clip — every play is fully contained in a single clip."
       : `  ⚠ ${boundaryCrossers} play(s) spanned a clip boundary in the old layout; each is anchored to its START clip and keeps its duration (see below).`,
   );
+  console.log(
+    `  ${localMismatches.length === 0 ? "✓" : "✗"} ${localPreserved}/${plays.length} plays verified to keep the SAME clip at the SAME in-clip time.`,
+  );
+  if (localMismatches.length) {
+    localMismatches.slice(0, 10).forEach((m) => console.log(`    ✗ ${m}`));
+  }
   if (samples.length) {
     console.log("Sample remaps:");
     samples.forEach((s) => console.log(s));
@@ -317,6 +490,12 @@ async function main() {
   if (boundaryCrossers > 0) {
     errors.push(
       `${boundaryCrossers} play(s) span more than one clip — resolve these manually before migrating`,
+    );
+  }
+  // Hard guarantee: every play must keep its exact in-clip position.
+  if (localMismatches.length > 0) {
+    errors.push(
+      `${localMismatches.length} play(s) would NOT keep the same in-clip time — refusing to migrate`,
     );
   }
   // clip sortOrder strictly follows capturedAt
