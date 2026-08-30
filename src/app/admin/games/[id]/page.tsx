@@ -22,11 +22,11 @@ type SaveStatus = "idle" | "saving" | "saved" | "error";
 const VIEW_MODES = ["upload", "plays", "export"] as const;
 type ViewMode = (typeof VIEW_MODES)[number];
 
-function parseViewMode(value: string | null): ViewMode {
+function parseViewMode(value: string | null, hasClips = false): ViewMode {
   if (value && VIEW_MODES.includes(value as ViewMode)) {
     return value as ViewMode;
   }
-  return "upload";
+  return hasClips ? "plays" : "upload";
 }
 
 function normalizePlaysSnapshot(plays: PlayDraft[]): string {
@@ -59,9 +59,10 @@ export default function AdminGamePage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const gameId = params.id as string;
-  const activeView = parseViewMode(searchParams.get("view"));
   const [game, setGame] = useState<GameWithRelations | null>(null);
   const [plays, setPlays] = useState<PlayDraft[]>([]);
+  const hasClips = (game?.videoClips?.length ?? 0) > 0;
+  const activeView = parseViewMode(searchParams.get("view"), hasClips);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const lastSavedSnapshotRef = useRef<string | null>(null);
   const isSavingRef = useRef(false);
@@ -88,6 +89,15 @@ export default function AdminGamePage() {
   useEffect(() => {
     void loadGame();
   }, [loadGame]);
+
+  useEffect(() => {
+    if (!game || searchParams.has("view")) return;
+    if (!hasClips) return;
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("view", "plays");
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }, [game, hasClips, searchParams, pathname, router]);
 
   const persistPlays = useCallback(
     async (playsToSave: PlayDraft[]) => {
