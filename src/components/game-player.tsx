@@ -56,6 +56,8 @@ import {
 } from "@/components/player-stage";
 import { PlayerLoopToggle } from "@/components/player-loop-toggle";
 import { PlayerVideoOverlay } from "@/components/player-video-overlay";
+import { FullscreenButton } from "@/components/fullscreen-button";
+import { useFullscreen } from "@/hooks/use-fullscreen";
 
 type GamePlayerProps = {
   plays: PlayRecord[];
@@ -73,6 +75,7 @@ export function GamePlayer({
   viewerAudioMuted = false,
 }: GamePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoFrameRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineWidth = useElementWidth(timelineRef);
   const seekingRef = useRef(false);
@@ -112,6 +115,11 @@ export function GamePlayer({
   const [loopPlay, setLoopPlay] = useState(false);
   const loopPlayRef = useRef(false);
   loopPlayRef.current = loopPlay;
+
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(
+    videoFrameRef,
+    videoRef,
+  );
 
   const currentSegment =
     playSegments.find((s) => s.playIndex === currentIndex) ?? playSegments[0];
@@ -569,7 +577,7 @@ export function GamePlayer({
       <div className={playerMainGridClass}>
       <div className={playerVideoColumnClass}>
         <div className={playerVideoShellClass}>
-          <div className={playerVideoFrameClass}>
+          <div ref={videoFrameRef} className={playerVideoFrameClass}>
             <video
               ref={videoRef}
               className={playerVideoClass}
@@ -579,11 +587,13 @@ export function GamePlayer({
               muted={viewerAudioMuted}
               onClick={togglePlay}
             />
-            <PlayerLoopToggle
-              enabled={loopPlay}
-              onChange={setLoopPlay}
-              className="absolute top-3 right-3 z-10 max-lg:landscape:top-2 max-lg:landscape:right-2"
-            />
+            <div className="absolute top-3 right-3 z-10 flex items-center gap-2 max-lg:landscape:top-2 max-lg:landscape:right-2">
+              <FullscreenButton
+                isFullscreen={isFullscreen}
+                onToggle={toggleFullscreen}
+              />
+              <PlayerLoopToggle enabled={loopPlay} onChange={setLoopPlay} />
+            </div>
             <PlayerVideoOverlay
               playNumber={currentPlayNumber}
               playPosition={playPosition}
