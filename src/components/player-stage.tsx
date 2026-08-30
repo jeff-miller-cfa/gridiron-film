@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useSiteHeaderOffsetPx } from "@/hooks/use-site-header-offset";
 
@@ -10,22 +10,68 @@ type PlayerStageProps = {
 };
 
 const STAGE_INSET_Y_PX = 12;
+const MOBILE_LANDSCAPE_QUERY = "(max-width: 1023px) and (orientation: landscape)";
+const PIN_STATE_DEBOUNCE_MS = 75;
+
+function useMobileLandscape() {
+  const [isMobileLandscape, setIsMobileLandscape] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_LANDSCAPE_QUERY);
+    const sync = () => setIsMobileLandscape(mediaQuery.matches);
+
+    sync();
+    mediaQuery.addEventListener("change", sync);
+    return () => mediaQuery.removeEventListener("change", sync);
+  }, []);
+
+  return isMobileLandscape;
+}
 
 /** Fills the viewport below the site header once the page is scrolled into the player. */
 export function PlayerStage({ children, className }: PlayerStageProps) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(false);
+  const isMobileLandscape = useMobileLandscape();
   const headerOffset = useSiteHeaderOffsetPx();
+  const pinningEnabled = !isMobileLandscape;
+
   const stageTop = headerOffset + STAGE_INSET_Y_PX;
-  const stageHeight = `calc(100dvh - ${headerOffset}px - ${STAGE_INSET_Y_PX * 2}px)`;
+  const stageHeight = useMemo(() => {
+    const insets = STAGE_INSET_Y_PX * 2;
+
+    if (isMobileLandscape) {
+      return `calc(100svh - var(--site-header-height, 2.75rem) - ${insets}px)`;
+    }
+
+    return `calc(100svh - ${headerOffset}px - ${insets}px)`;
+  }, [headerOffset, isMobileLandscape]);
 
   useEffect(() => {
+    if (!pinningEnabled) {
+      setPinned(false);
+      return;
+    }
+
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
 
+    let pinTimeout: ReturnType<typeof setTimeout> | null = null;
+
     const observer = new IntersectionObserver(
       ([entry]) => {
-        setPinned(!entry.isIntersecting);
+        if (!entry) return;
+
+        if (pinTimeout) {
+          clearTimeout(pinTimeout);
+        }
+
+        pinTimeout = setTimeout(() => {
+          setPinned((current) => {
+            const next = !entry.isIntersecting;
+            return current === next ? current : next;
+          });
+        }, PIN_STATE_DEBOUNCE_MS);
       },
       {
         threshold: 0,
@@ -34,28 +80,37 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
     );
 
     observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [headerOffset]);
+    return () => {
+      if (pinTimeout) {
+        clearTimeout(pinTimeout);
+      }
+      observer.disconnect();
+    };
+  }, [headerOffset, pinningEnabled]);
+
+  const isPinned = pinningEnabled && pinned;
 
   return (
     <>
-      <div ref={sentinelRef} className="h-px w-full shrink-0" aria-hidden />
+      {pinningEnabled ? (
+        <div ref={sentinelRef} className="h-px w-full shrink-0" aria-hidden />
+      ) : null}
       <div
         className={cn(
           "flex min-h-0 flex-col gap-3 bg-background sm:gap-4 max-lg:landscape:gap-2",
-          pinned
+          isPinned
             ? "fixed inset-x-0 z-30 px-4 sm:px-6"
-            : "relative my-3 w-full",
+            : "relative my-3 w-full max-lg:landscape:my-2",
           className,
         )}
         style={{
-          top: pinned ? stageTop : undefined,
+          top: isPinned ? stageTop : undefined,
           height: stageHeight,
         }}
       >
         {children}
       </div>
-      {pinned ? (
+      {isPinned ? (
         <div aria-hidden className="w-full shrink-0" style={{ height: stageHeight }} />
       ) : null}
     </>
