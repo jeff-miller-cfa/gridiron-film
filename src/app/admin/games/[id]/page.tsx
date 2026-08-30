@@ -262,7 +262,7 @@ export default function AdminGamePage() {
         className={cn(
           "w-full px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8",
           isPlayEditingView &&
-            "max-lg:landscape:h-svh max-lg:landscape:overflow-hidden max-lg:landscape:py-0",
+            "max-lg:landscape:h-[calc(100svh-var(--site-header-height,2.75rem))] max-lg:landscape:overflow-hidden max-lg:landscape:py-0",
         )}
       >
         <Tabs
@@ -272,7 +272,8 @@ export default function AdminGamePage() {
           }
           className={cn(
             "space-y-4 max-lg:landscape:space-y-2",
-            isPlayEditingView && "max-lg:landscape:space-y-0",
+            isPlayEditingView &&
+              "max-lg:landscape:flex max-lg:landscape:h-[calc(100svh-var(--site-header-height,2.75rem))] max-lg:landscape:min-h-0 max-lg:landscape:flex-col max-lg:landscape:space-y-0",
           )}
         >
           <div
@@ -386,7 +387,13 @@ export default function AdminGamePage() {
             <VideoUploader gameId={gameId} onUploaded={() => void loadGame()} />
           </TabsContent>
 
-          <TabsContent value="timeline">
+          <TabsContent
+            value="timeline"
+            className={cn(
+              isPlayEditingView &&
+                "max-lg:landscape:min-h-0 max-lg:landscape:flex-1",
+            )}
+          >
             <PlayEditor
               mode="game"
               clips={game.videoClips ?? []}
@@ -400,7 +407,13 @@ export default function AdminGamePage() {
             />
           </TabsContent>
 
-          <TabsContent value="clip">
+          <TabsContent
+            value="clip"
+            className={cn(
+              isPlayEditingView &&
+                "max-lg:landscape:min-h-0 max-lg:landscape:flex-1",
+            )}
+          >
             <PlayEditor
               mode="clip"
               clips={game.videoClips ?? []}

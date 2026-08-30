@@ -468,7 +468,7 @@ export function GamePlayer({
     : 0;
 
   const timelinePanel = (
-    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:py-3">
+    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:space-y-1 max-lg:landscape:p-2">
       <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
         <span>{formatDuration(playbackTime)}</span>
         <span>{formatDuration(playbackDuration)}</span>

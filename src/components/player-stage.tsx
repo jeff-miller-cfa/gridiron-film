@@ -35,14 +35,14 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
   const isMobileLandscape = useMobileLandscape();
   const headerOffset = useSiteHeaderOffsetPx();
 
-  const stageInsetsY = isMobileLandscape ? 4 : STAGE_INSET_Y_PX * 2;
+  const stageInsetsY = isMobileLandscape ? 0 : STAGE_INSET_Y_PX * 2;
   const stageTop = isMobileLandscape
     ? "var(--site-header-height, 2.75rem)"
     : `${headerOffset + STAGE_INSET_Y_PX}px`;
 
   const stageHeight = useMemo(() => {
     if (isMobileLandscape) {
-      return `calc(100svh - var(--site-header-height, 2.75rem) - ${stageInsetsY}px)`;
+      return `calc(100svh - var(--site-header-height, 2.75rem)${stageInsetsY ? ` - ${stageInsetsY}px` : ""})`;
     }
 
     return `calc(100svh - ${headerOffset}px - ${stageInsetsY}px)`;
@@ -98,7 +98,7 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
       ) : null}
       <div
         className={cn(
-          "flex min-h-0 flex-col gap-3 bg-background sm:gap-4 max-lg:landscape:gap-2",
+          "flex min-h-0 flex-col gap-3 bg-background sm:gap-4 max-lg:landscape:gap-1",
           isFixed
             ? cn(
                 "fixed inset-x-0 z-30",
@@ -122,22 +122,22 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
 }
 
 export const playerMainGridClass =
-  "grid min-h-0 flex-1 gap-4 max-lg:portrait:grid-cols-1 max-lg:portrait:grid-rows-[auto_minmax(0,1fr)] max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:gap-2 lg:grid-cols-[1fr_minmax(320px,28rem)] lg:gap-6";
+  "grid min-h-0 flex-1 gap-4 max-lg:portrait:grid-cols-1 max-lg:portrait:grid-rows-[auto_minmax(0,1fr)] max-lg:landscape:h-full max-lg:landscape:min-h-0 max-lg:landscape:grid-cols-[minmax(0,1fr)_minmax(11rem,38%)] max-lg:landscape:grid-rows-[minmax(0,1fr)] max-lg:landscape:gap-2 lg:h-full lg:min-h-0 lg:grid-cols-[1fr_minmax(320px,28rem)] lg:grid-rows-[minmax(0,1fr)] lg:gap-6";
 
 export const playerVideoColumnClass =
-  "flex min-h-0 flex-col gap-3 max-lg:landscape:gap-2";
+  "flex min-h-0 flex-col gap-3 max-lg:landscape:h-full max-lg:landscape:min-h-0 max-lg:landscape:gap-2";
 
 export const playerVideoShellClass =
-  "surface-elevated min-h-0 overflow-hidden p-1 max-lg:portrait:shrink-0 lg:flex-1 max-lg:landscape:flex-1";
+  "surface-elevated flex min-h-0 flex-1 overflow-hidden p-1 max-lg:portrait:shrink-0";
 
 export const playerVideoFrameClass =
-  "relative min-h-0 overflow-hidden rounded-xl bg-slate-900 max-lg:portrait:aspect-video lg:h-full max-lg:landscape:h-full";
+  "relative flex min-h-0 flex-1 overflow-hidden rounded-xl bg-slate-900 max-lg:portrait:aspect-video max-lg:portrait:flex-none";
 
 export const playerVideoClass =
-  "w-full max-lg:portrait:aspect-video max-lg:portrait:h-auto lg:h-full lg:object-contain max-lg:landscape:h-full max-lg:landscape:object-contain";
+  "h-full w-full max-lg:portrait:aspect-video max-lg:portrait:h-auto object-contain";
 
 export const playerPlayListCardClass =
-  "surface-card flex min-h-0 flex-col overflow-hidden";
+  "surface-card flex h-full min-h-0 flex-col overflow-hidden";
 
 export const playerPlayListContentClass =
   "min-h-0 flex-1 overflow-y-auto";

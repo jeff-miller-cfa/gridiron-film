@@ -438,7 +438,7 @@ export function ClipPlayEditor({
       : gameTimeToClipLocal(entry, pendingStartGameTime);
 
   const timelinePanel = (
-    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:py-3">
+    <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:space-y-1 max-lg:landscape:p-2">
       <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
         <span>{formatDuration(localTime)}</span>
         <span>{formatDuration(clipDuration)} clip</span>
@@ -513,7 +513,7 @@ export function ClipPlayEditor({
 
   return (
     <PlayerStage>
-      <div className="surface-card flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="surface-card flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3 max-lg:landscape:px-2 max-lg:landscape:py-2">
         <div className="min-w-0">
           <button
             type="button"
@@ -527,7 +527,7 @@ export function ClipPlayEditor({
             <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary sm:h-5 sm:w-5" />
           </button>
           {hasWrapper ? (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground max-lg:landscape:hidden">
               Full-clip placeholder — your first marked play replaces it
             </p>
           ) : null}
