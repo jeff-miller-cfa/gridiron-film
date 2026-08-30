@@ -42,7 +42,7 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
 
   const stageHeight = useMemo(() => {
     if (isMobileLandscape) {
-      return `calc(100svh - var(--site-header-height, 2.75rem)${stageInsetsY ? ` - ${stageInsetsY}px` : ""})`;
+      return `calc(var(--visual-vh, 100svh) - var(--site-header-height, 2.75rem)${stageInsetsY ? ` - ${stageInsetsY}px` : ""})`;
     }
 
     return `calc(100svh - ${headerOffset}px - ${stageInsetsY}px)`;

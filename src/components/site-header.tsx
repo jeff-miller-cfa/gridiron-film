@@ -21,38 +21,59 @@ export function SiteHeader({ variant = "default" }: SiteHeaderProps) {
     const header = headerRef.current;
     if (!header) return;
 
+    const root = document.documentElement;
     const landscapeMobile = window.matchMedia(
       "(max-width: 1023px) and (orientation: landscape)",
     );
 
+    // Track the true visible viewport height. iOS Safari mis-measures `svh`
+    // for `position: fixed` elements (it uses the large viewport), so the
+    // locked landscape player relies on this measured value instead.
+    const syncViewportHeight = () => {
+      const height = Math.round(
+        window.visualViewport?.height ?? window.innerHeight,
+      );
+      root.style.setProperty("--visual-vh", `${height}px`);
+    };
+
     const syncHeaderOffset = () => {
       if (landscapeMobile.matches) {
-        document.documentElement.style.setProperty("--site-header-offset", "0px");
+        // Clear the portrait-measured overrides so the landscape CSS
+        // media-query values (offset 0, height 2.75rem) take over. Leaving
+        // them inline would keep the taller portrait header height stuck
+        // after an orientation change and mis-size the player stage.
+        root.style.removeProperty("--site-header-offset");
+        root.style.removeProperty("--site-header-height");
         return;
       }
 
       const height = Math.ceil(header.getBoundingClientRect().height);
-      document.documentElement.style.setProperty(
-        "--site-header-offset",
-        `${height}px`,
-      );
-      document.documentElement.style.setProperty(
-        "--site-header-height",
-        `${height}px`,
-      );
+      root.style.setProperty("--site-header-offset", `${height}px`);
+      root.style.setProperty("--site-header-height", `${height}px`);
     };
 
-    syncHeaderOffset();
+    const sync = () => {
+      syncHeaderOffset();
+      syncViewportHeight();
+    };
 
-    const observer = new ResizeObserver(syncHeaderOffset);
+    sync();
+
+    const observer = new ResizeObserver(sync);
     observer.observe(header);
-    landscapeMobile.addEventListener("change", syncHeaderOffset);
-    window.addEventListener("resize", syncHeaderOffset);
+    landscapeMobile.addEventListener("change", sync);
+    window.addEventListener("resize", sync);
+    window.addEventListener("orientationchange", sync);
+    window.visualViewport?.addEventListener("resize", syncViewportHeight);
+    window.visualViewport?.addEventListener("scroll", syncViewportHeight);
 
     return () => {
       observer.disconnect();
-      landscapeMobile.removeEventListener("change", syncHeaderOffset);
-      window.removeEventListener("resize", syncHeaderOffset);
+      landscapeMobile.removeEventListener("change", sync);
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("orientationchange", sync);
+      window.visualViewport?.removeEventListener("resize", syncViewportHeight);
+      window.visualViewport?.removeEventListener("scroll", syncViewportHeight);
     };
   }, []);
 

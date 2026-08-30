@@ -20,7 +20,7 @@ export default async function GameWatchPage({ params }: PageProps) {
 
   return (
     <PageShell>
-      <main className="w-full px-4 py-6 max-lg:landscape:h-[calc(100svh-var(--site-header-height,2.75rem))] max-lg:landscape:overflow-hidden max-lg:landscape:px-2 max-lg:landscape:py-0 sm:px-6 sm:py-8">
+      <main className="w-full px-4 py-6 max-lg:landscape:h-[calc(var(--visual-vh,100svh)-var(--site-header-height,2.75rem))] max-lg:landscape:overflow-hidden max-lg:landscape:px-2 max-lg:landscape:py-0 sm:px-6 sm:py-8">
         <div className="surface-card mb-8 p-6 max-lg:landscape:hidden">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
             Now watching
