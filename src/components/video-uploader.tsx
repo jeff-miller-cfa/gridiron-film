@@ -57,7 +57,7 @@ type VideoUploaderProps = {
 };
 
 type ProcessClipResult =
-  | { kind: "uploaded"; clip: UploadedClip }
+  | { kind: "uploaded"; clip: UploadedClip; saved: boolean }
   | { kind: "skipped" }
   | { kind: "error"; error: unknown };
 
@@ -158,6 +158,18 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     return reserved;
   };
 
+  const saveClipRecord = async (clip: UploadedClip): Promise<void> => {
+    const res = await fetch(`/api/games/${gameId}/clips`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clips: [clip] }),
+    });
+
+    if (!res.ok) {
+      throw new Error("Failed to save clip record");
+    }
+  };
+
   const processClip = async (
     file: File,
     itemId: string,
@@ -239,6 +251,21 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
     });
 
     updateItem(itemId, {
+      status: "preparing",
+      progress: 98,
+      message: "Saving clip record...",
+    });
+
+    const clip: UploadedClip = {
+      blobUrl: blob.url,
+      filename: uploadFile.name,
+      capturedAt: capturedAt.toISOString(),
+      duration,
+    };
+
+    await saveClipRecord(clip);
+
+    updateItem(itemId, {
       status: "done",
       progress: 100,
       message: "Uploaded",
@@ -246,12 +273,8 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
 
     return {
       kind: "uploaded",
-      clip: {
-        blobUrl: blob.url,
-        filename: uploadFile.name,
-        capturedAt: capturedAt.toISOString(),
-        duration,
-      },
+      clip,
+      saved: true,
     };
   };
 
@@ -294,13 +317,13 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         },
       );
 
-      const clips: UploadedClip[] = [];
       let skippedCount = 0;
       let failureCount = 0;
+      let savedCount = 0;
 
       results.forEach((result, index) => {
         if (result.kind === "uploaded") {
-          clips.push(result.clip);
+          if (result.saved) savedCount += 1;
           return;
         }
 
@@ -316,7 +339,7 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         });
       });
 
-      if (clips.length === 0) {
+      if (savedCount === 0) {
         if (skippedCount > 0 && failureCount === 0) {
           setBatchStatus(
             `Skipped ${skippedCount} clip${skippedCount === 1 ? "" : "s"} already uploaded.`,
@@ -329,33 +352,43 @@ export function VideoUploader({ gameId, onUploaded }: VideoUploaderProps) {
         return;
       }
 
-      setBatchStatus("Saving clips and creating plays...");
+      setBatchStatus(
+        failureCount === 0
+          ? "Finalizing upload and creating plays..."
+          : "Finalizing uploaded clips...",
+      );
 
-      const res = await fetch(`/api/games/${gameId}/clips`, {
+      const finalizeRes = await fetch(`/api/games/${gameId}/clips`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clips }),
+        body: JSON.stringify({
+          finalize: true,
+          createPlays: failureCount === 0,
+        }),
       });
 
-      if (!res.ok) {
-        setBatchStatus("Error: Failed to save clips.");
+      if (!finalizeRes.ok) {
+        setBatchStatus(
+          `Uploaded ${savedCount} clip${savedCount === 1 ? "" : "s"}, but finalizing failed. Use Reset plays after reviewing clips.`,
+        );
+        onUploaded();
         return;
       }
 
-      const saved = (await res.json()) as { skippedCount?: number };
-      const serverSkipped = saved.skippedCount ?? 0;
-      const totalSkipped = skippedCount + serverSkipped;
-
       const parts: string[] = [
-        `Uploaded ${clips.length - serverSkipped} clip${clips.length - serverSkipped === 1 ? "" : "s"}.`,
+        `Uploaded ${savedCount} clip${savedCount === 1 ? "" : "s"}.`,
       ];
-      if (totalSkipped > 0) {
+      if (failureCount === 0) {
+        parts.push("Plays created.");
+      } else {
         parts.push(
-          `Skipped ${totalSkipped} duplicate${totalSkipped === 1 ? "" : "s"}.`,
+          `${failureCount} failed — clip records were saved for successful uploads. Use Reset plays when ready.`,
         );
       }
-      if (failureCount > 0) {
-        parts.push(`${failureCount} failed.`);
+      if (skippedCount > 0) {
+        parts.push(
+          `Skipped ${skippedCount} duplicate${skippedCount === 1 ? "" : "s"}.`,
+        );
       }
       setBatchStatus(parts.join(" "));
 

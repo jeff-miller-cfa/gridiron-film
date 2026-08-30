@@ -12,6 +12,7 @@
     "recompress-clips": "dotenv -e .env.local -- npx tsx scripts/recompress-clips.ts",
     "reset-plays": "dotenv -e .env.local -- npx tsx scripts/reset-plays.ts",
     "migrate-plays": "dotenv -e .env.local -- npx tsx scripts/migrate-plays-to-game-timeline.ts",
+    "import-blob-clips": "dotenv -e .env.local -- npx tsx scripts/import-blob-clips.ts",
     "postinstall": "node scripts/copy-ffmpeg-core.js"
   },
   "dependencies": {
