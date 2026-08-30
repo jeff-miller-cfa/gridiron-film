@@ -40,6 +40,7 @@ import {
 } from "@/lib/play-timeline-colors";
 import type { PlayDraft, VideoClipRecord } from "@/types";
 import {
+  Ban,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -393,6 +394,12 @@ export function ClipPlayEditor({
     removeWrapperForClip,
   ]);
 
+  const markNoPlays = useCallback(() => {
+    setPendingStartGameTime(null);
+    pendingStartGameTimeRef.current = null;
+    removeWrapperForClip();
+  }, [removeWrapperForClip]);
+
   const removePlay = (play: PlayDraft) => {
     const targetKey = playIdentityKey(play);
     updatePlays(plays.filter((p) => playIdentityKey(p) !== targetKey));
@@ -561,6 +568,8 @@ export function ClipPlayEditor({
         onOpenChange={setClipPickerOpen}
         entries={entries}
         plays={plays}
+        homeTeam={homeTeam}
+        awayTeam={awayTeam}
         currentIndex={safeClipIndex}
         onSelectClip={onClipIndexChange}
       />
@@ -630,6 +639,16 @@ export function ClipPlayEditor({
                 >
                   <Flag className="mr-2 h-4 w-4" />
                   End
+                </Button>
+                <Button
+                  variant="outline"
+                  className="rounded-xl border-white/25 bg-black/50 text-white backdrop-blur-sm hover:bg-black/65 hover:text-white"
+                  onClick={markNoPlays}
+                  disabled={!hasWrapper}
+                  title="Mark this clip as having no plays (removes the full-clip placeholder)"
+                >
+                  <Ban className="mr-2 h-4 w-4" />
+                  No Plays
                 </Button>
               </div>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-3">

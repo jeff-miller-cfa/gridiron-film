@@ -122,6 +122,7 @@ export function clipHasWrapperPlay(
 export type ClipPlayTag = {
   playNumber: number;
   duration: number;
+  offenseTeam: string | null;
 };
 
 export type ClipPlaySummary = {
@@ -164,6 +165,7 @@ export function clipPlaySummary(
     .map((segment) => ({
       playNumber: playNumberInGame(plays, segment.play),
       duration: segment.duration,
+      offenseTeam: segment.play.offenseTeam ?? null,
     }))
     .filter((tag) => tag.playNumber > 0);
 

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { ClipLayoutEntry } from "@/lib/clip-layout";
 import { clipPlaySummary } from "@/lib/clip-play-editing";
+import { offenseTeamBadgeClass } from "@/lib/play-timeline-colors";
 import { formatDuration } from "@/lib/video";
 import type { PlayDraft } from "@/types";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,8 @@ type ClipPickerProps = {
   onOpenChange: (open: boolean) => void;
   entries: ClipLayoutEntry[];
   plays: PlayDraft[];
+  homeTeam: string;
+  awayTeam: string;
   currentIndex: number;
   onSelectClip: (index: number) => void;
 };
@@ -34,6 +37,8 @@ type ClipPickerProps = {
 function ClipPickerBody({
   entries,
   plays,
+  homeTeam,
+  awayTeam,
   currentIndex,
   unprocessedCount,
   showUnprocessedOnly,
@@ -42,6 +47,8 @@ function ClipPickerBody({
 }: {
   entries: ClipLayoutEntry[];
   plays: PlayDraft[];
+  homeTeam: string;
+  awayTeam: string;
   currentIndex: number;
   unprocessedCount: number;
   showUnprocessedOnly: boolean;
@@ -160,6 +167,17 @@ function ClipPickerBody({
                           <span className="font-semibold text-primary tabular-nums">
                             Play {play.playNumber}
                           </span>
+                          {play.offenseTeam ? (
+                            <span
+                              className={offenseTeamBadgeClass(
+                                play.offenseTeam,
+                                homeTeam,
+                                awayTeam,
+                              )}
+                            >
+                              {play.offenseTeam}
+                            </span>
+                          ) : null}
                           <span className="text-muted-foreground tabular-nums">
                             {formatDuration(play.duration)}
                           </span>
@@ -192,6 +210,8 @@ export function ClipPicker({
   onOpenChange,
   entries,
   plays,
+  homeTeam,
+  awayTeam,
   currentIndex,
   onSelectClip,
 }: ClipPickerProps) {
@@ -219,6 +239,8 @@ export function ClipPicker({
   const bodyProps = {
     entries,
     plays,
+    homeTeam,
+    awayTeam,
     currentIndex,
     unprocessedCount,
     showUnprocessedOnly,

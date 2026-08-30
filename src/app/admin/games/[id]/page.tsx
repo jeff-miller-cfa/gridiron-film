@@ -84,9 +84,16 @@ export default function AdminGamePage() {
     hasClips,
   );
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveNonce, setSaveNonce] = useState(0);
   const lastSavedSnapshotRef = useRef<string | null>(null);
   const isSavingRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Always-current view of `plays` so an in-flight save can tell whether the
+  // user edited during the request and avoid clobbering those newer edits.
+  const playsRef = useRef<PlayDraft[]>(plays);
+  useEffect(() => {
+    playsRef.current = plays;
+  }, [plays]);
 
   const loadGame = useCallback(async () => {
     const res = await fetch(`/api/games/${gameId}`);
@@ -152,16 +159,28 @@ export default function AdminGamePage() {
       if (!res.ok) {
         isSavingRef.current = false;
         setSaveStatus("error");
+        setSaveNonce((nonce) => nonce + 1);
         return;
       }
 
       const saved = mapPlaysFromApi(await res.json(), game?.videoClips ?? []);
-      lastSavedSnapshotRef.current = normalizePlaysSnapshot(saved);
-      setPlays(saved);
-
       isSavingRef.current = false;
+
+      // Only adopt the server response (which carries fresh row ids) when the
+      // user hasn't edited during the request. Otherwise those edits — e.g. a
+      // team marked right after creating a play — would be overwritten by the
+      // stale saved snapshot. The bumped nonce re-runs the autosave effect so
+      // the newer edits get persisted next.
+      if (normalizePlaysSnapshot(playsRef.current) === snapshot) {
+        lastSavedSnapshotRef.current = normalizePlaysSnapshot(saved);
+        setPlays(saved);
+      } else {
+        lastSavedSnapshotRef.current = snapshot;
+      }
+
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
+      setSaveNonce((nonce) => nonce + 1);
     },
     [game?.videoClips, gameId],
   );
@@ -180,7 +199,7 @@ export default function AdminGamePage() {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [plays, game, persistPlays]);
+  }, [plays, game, persistPlays, saveNonce]);
 
   const restoreGap = (gaps: PlayGap[]) => {
     if (gaps.length === 0) return;
