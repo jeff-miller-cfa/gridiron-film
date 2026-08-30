@@ -34,21 +34,22 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
   const [pinned, setPinned] = useState(false);
   const isMobileLandscape = useMobileLandscape();
   const headerOffset = useSiteHeaderOffsetPx();
-  const pinningEnabled = !isMobileLandscape;
 
-  const stageTop = headerOffset + STAGE_INSET_Y_PX;
+  const stageInsetsY = isMobileLandscape ? 4 : STAGE_INSET_Y_PX * 2;
+  const stageTop = isMobileLandscape
+    ? "var(--site-header-height, 2.75rem)"
+    : `${headerOffset + STAGE_INSET_Y_PX}px`;
+
   const stageHeight = useMemo(() => {
-    const insets = STAGE_INSET_Y_PX * 2;
-
     if (isMobileLandscape) {
-      return `calc(100svh - var(--site-header-height, 2.75rem) - ${insets}px)`;
+      return `calc(100svh - var(--site-header-height, 2.75rem) - ${stageInsetsY}px)`;
     }
 
-    return `calc(100svh - ${headerOffset}px - ${insets}px)`;
-  }, [headerOffset, isMobileLandscape]);
+    return `calc(100svh - ${headerOffset}px - ${stageInsetsY}px)`;
+  }, [headerOffset, isMobileLandscape, stageInsetsY]);
 
   useEffect(() => {
-    if (!pinningEnabled) {
+    if (isMobileLandscape) {
       setPinned(false);
       return;
     }
@@ -86,31 +87,34 @@ export function PlayerStage({ children, className }: PlayerStageProps) {
       }
       observer.disconnect();
     };
-  }, [headerOffset, pinningEnabled]);
+  }, [headerOffset, isMobileLandscape]);
 
-  const isPinned = pinningEnabled && pinned;
+  const isFixed = isMobileLandscape || pinned;
 
   return (
     <>
-      {pinningEnabled ? (
+      {!isMobileLandscape ? (
         <div ref={sentinelRef} className="h-px w-full shrink-0" aria-hidden />
       ) : null}
       <div
         className={cn(
           "flex min-h-0 flex-col gap-3 bg-background sm:gap-4 max-lg:landscape:gap-2",
-          isPinned
-            ? "fixed inset-x-0 z-30 px-4 sm:px-6"
-            : "relative my-3 w-full max-lg:landscape:my-2",
+          isFixed
+            ? cn(
+                "fixed inset-x-0 z-30",
+                isMobileLandscape ? "px-2" : "px-4 sm:px-6",
+              )
+            : "relative my-3 w-full",
           className,
         )}
         style={{
-          top: isPinned ? stageTop : undefined,
+          top: isFixed ? stageTop : undefined,
           height: stageHeight,
         }}
       >
         {children}
       </div>
-      {isPinned ? (
+      {pinned && !isMobileLandscape ? (
         <div aria-hidden className="w-full shrink-0" style={{ height: stageHeight }} />
       ) : null}
     </>

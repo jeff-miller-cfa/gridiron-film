@@ -258,7 +258,13 @@ export default function AdminGamePage() {
 
   return (
     <PageShell variant="admin">
-      <main className="w-full px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8">
+      <main
+        className={cn(
+          "w-full px-4 py-6 max-lg:landscape:px-2 max-lg:landscape:py-2 sm:px-6 sm:py-8",
+          isPlayEditingView &&
+            "max-lg:landscape:h-svh max-lg:landscape:overflow-hidden max-lg:landscape:py-0",
+        )}
+      >
         <Tabs
           value={activeView}
           onValueChange={(value) =>
