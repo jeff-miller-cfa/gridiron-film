@@ -42,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Migration backups from fix-clip-capture-times (kept locally for --revert)
+clip-capture-backup-*.json
