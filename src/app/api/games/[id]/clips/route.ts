@@ -42,6 +42,21 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "No clips provided" }, { status: 400 });
   }
 
+  // capturedAt is required and must be a real timestamp — it drives clip order.
+  // Never accept a clip without it (the client derives it from video metadata).
+  const invalidClip = clips.find((clip) => {
+    const time = new Date(clip.capturedAt as string | Date).getTime();
+    return !clip.capturedAt || Number.isNaN(time);
+  });
+  if (invalidClip) {
+    return NextResponse.json(
+      {
+        error: `Clip "${invalidClip.filename ?? "unknown"}" is missing a valid capturedAt timestamp`,
+      },
+      { status: 400 },
+    );
+  }
+
   const result = await insertGameClips(gameId, clips);
 
   return NextResponse.json({

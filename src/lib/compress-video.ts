@@ -35,6 +35,10 @@ export async function compressVideoForWeb(
     await ffmpeg.exec([
       "-i",
       inputName,
+      // Carry the source container metadata (notably the moov creation_time,
+      // which is our capturedAt) through the re-encode instead of dropping it.
+      "-map_metadata",
+      "0",
       "-c:v",
       "libx264",
       "-preset",
@@ -50,7 +54,7 @@ export async function compressVideoForWeb(
       "-b:a",
       "128k",
       "-movflags",
-      "+faststart",
+      "+faststart+use_metadata_tags",
       "-y",
       outputName,
     ]);

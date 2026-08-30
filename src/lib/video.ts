@@ -6,10 +6,30 @@ function mp4EpochToDate(seconds: number): Date {
   return new Date(EPOCH_1904 + seconds * 1000);
 }
 
-export async function extractVideoCaptureTime(file: File): Promise<Date> {
+/**
+ * Thrown when a clip has no embedded capture time. We intentionally do NOT fall
+ * back to `file.lastModified` — that is the file's copy/transfer time, not when
+ * the footage was recorded, and using it silently corrupts clip ordering.
+ */
+export class MissingCaptureTimeError extends Error {
+  constructor(filename?: string) {
+    super(
+      filename
+        ? `"${filename}" has no capture time in its metadata`
+        : "Video has no capture time in its metadata",
+    );
+    this.name = "MissingCaptureTimeError";
+  }
+}
+
+/**
+ * Reads the recording time from the video's container metadata (mp4/mov moov
+ * creation time). Returns null when the file carries no valid capture time.
+ */
+export async function readVideoCaptureTime(file: File): Promise<Date | null> {
   try {
     const buffer = await file.arrayBuffer();
-    const captureTime = await new Promise<Date | null>((resolve) => {
+    return await new Promise<Date | null>((resolve) => {
       const mp4boxfile = createFile();
       let resolved = false;
 
@@ -22,8 +42,12 @@ export async function extractVideoCaptureTime(file: File): Promise<Date> {
       mp4boxfile.onReady = (info) => {
         const creation = info.created;
         if (creation instanceof Date && !Number.isNaN(creation.getTime())) {
-          finish(creation);
-          return;
+          // mp4box maps the 1904 epoch to 1970 for us; guard against the
+          // "zero" moov time (epoch 1904 -> 1970) that some encoders write.
+          if (creation.getTime() > 0) {
+            finish(creation);
+            return;
+          }
         }
         if (typeof creation === "number" && creation > 0) {
           finish(mp4EpochToDate(creation));
@@ -39,13 +63,21 @@ export async function extractVideoCaptureTime(file: File): Promise<Date> {
       mp4boxfile.flush();
       setTimeout(() => finish(null), 3000);
     });
-
-    if (captureTime) return captureTime;
   } catch {
-    // fall through to lastModified
+    return null;
   }
+}
 
-  return new Date(file.lastModified);
+/**
+ * Returns the clip's recording time, or throws {@link MissingCaptureTimeError}
+ * when the file has none. Callers must reject the upload on that error.
+ */
+export async function extractVideoCaptureTime(file: File): Promise<Date> {
+  const captureTime = await readVideoCaptureTime(file);
+  if (!captureTime) {
+    throw new MissingCaptureTimeError(file.name);
+  }
+  return captureTime;
 }
 
 export async function getVideoDuration(file: File): Promise<number> {

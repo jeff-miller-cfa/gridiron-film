@@ -58,6 +58,22 @@ async function getDurationSeconds(filePath: string): Promise<number> {
   return duration;
 }
 
+async function readCreationTime(filePath: string): Promise<string | null> {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v",
+    "error",
+    "-show_entries",
+    "format_tags=creation_time",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    filePath,
+  ]);
+  const value = stdout.trim();
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : value;
+}
+
 async function compressVideo(inputPath: string, outputPath: string): Promise<void> {
   await execFileAsync("ffmpeg", [
     "-hide_banner",
@@ -65,6 +81,10 @@ async function compressVideo(inputPath: string, outputPath: string): Promise<voi
     "error",
     "-i",
     inputPath,
+    // Preserve container metadata (notably creation_time) through the re-encode.
+    // Without this ffmpeg drops the moov capture time, which is our capturedAt.
+    "-map_metadata",
+    "0",
     "-c:v",
     "libx264",
     "-preset",
@@ -80,10 +100,19 @@ async function compressVideo(inputPath: string, outputPath: string): Promise<voi
     "-b:a",
     "128k",
     "-movflags",
-    "+faststart",
+    "+faststart+use_metadata_tags",
     "-y",
     outputPath,
   ]);
+
+  // Guarantee the capture time survived the re-encode; fail loudly otherwise so
+  // we never publish a clip whose capturedAt can't be recovered from the file.
+  const sourceCreation = await readCreationTime(inputPath);
+  if (sourceCreation && !(await readCreationTime(outputPath))) {
+    throw new Error(
+      `creation_time was not preserved when recompressing ${inputPath}`,
+    );
+  }
 }
 
 async function assertFfmpegAvailable(): Promise<void> {
