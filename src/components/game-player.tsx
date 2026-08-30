@@ -149,7 +149,10 @@ export function GamePlayer({
       const clip = located.clip;
       const localTime = located.localTime;
       const clipId = located.clipId;
-      const previousClipId = resolveClipIdFromVideo(video, clipSources);
+      // Cached clips play from a blob: object URL that won't match clip.blobUrl,
+      // so trust the clip we last loaded and fall back to URL matching.
+      const previousClipId =
+        loadedClipIdRef.current ?? resolveClipIdFromVideo(video, clipSources);
       const seekToken = ++seekTokenRef.current;
 
       seekingRef.current = true;
@@ -278,7 +281,10 @@ export function GamePlayer({
       if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
 
       const local = video.currentTime;
-      const clipId = resolveClipIdFromVideo(video, clipSources);
+      // Cached clips play from a blob: object URL that won't match clip.blobUrl;
+      // fall back to the clip we last loaded so progress keeps tracking.
+      const clipId =
+        resolveClipIdFromVideo(video, clipSources) ?? loadedClipIdRef.current;
       if (!clipId) return;
 
       loadedClipIdRef.current = clipId;
