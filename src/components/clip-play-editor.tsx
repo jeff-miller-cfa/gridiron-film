@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ClipCacheButton } from "@/components/clip-cache-button";
+import { ClipPicker } from "@/components/clip-picker";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +29,7 @@ import {
   snapGameTime,
 } from "@/lib/play-boundaries";
 import { useElementWidth } from "@/hooks/use-element-width";
+import type { ClipCacheApi } from "@/hooks/use-clip-cache";
 import { useTimelineScrub } from "@/hooks/use-timeline-scrub";
 import { shouldShowTimelinePlayNumber } from "@/lib/timeline-labels";
 import { playIdentityKey } from "@/lib/plays";
@@ -37,9 +40,11 @@ import {
 } from "@/lib/play-timeline-colors";
 import type { PlayDraft, VideoClipRecord } from "@/types";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Flag,
+  HardDrive,
   Pause,
   Pencil,
   Play,
@@ -65,6 +70,7 @@ type ClipPlayEditorProps = {
   awayTeam: string;
   clipIndex: number;
   playLookbackSeconds?: number;
+  clipCache: ClipCacheApi;
   onClipIndexChange: (index: number) => void;
   onChange: (plays: PlayDraft[]) => void;
   initialGameTime?: number | null;
@@ -78,17 +84,31 @@ export function ClipPlayEditor({
   awayTeam,
   clipIndex,
   playLookbackSeconds = DEFAULT_PLAY_LOOKBACK_SECONDS,
+  clipCache,
   onClipIndexChange,
   onChange,
   initialGameTime = null,
   onGameTimeChange,
 }: ClipPlayEditorProps) {
   const lookbackSeconds = normalizePlayLookbackSeconds(playLookbackSeconds);
+  const {
+    supported: cacheSupported,
+    warmClip,
+    resolvePlaybackUrl,
+    cacheAll,
+    loadingAll: cachingAll,
+    loadAllProgress,
+    allCached,
+    cachedCount,
+    isPlayCached,
+  } = clipCache;
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineWidth = useElementWidth(timelineRef);
 
   const [localTime, setLocalTime] = useState(0);
+  const [videoSrc, setVideoSrc] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [pendingStartGameTime, setPendingStartGameTime] = useState<number | null>(
     null,
@@ -97,6 +117,7 @@ export function ClipPlayEditor({
   const [notesEditorPlayId, setNotesEditorPlayId] = useState<string | null>(
     null,
   );
+  const [clipPickerOpen, setClipPickerOpen] = useState(false);
 
   const { entries } = useMemo(() => buildClipLayout(clips), [clips]);
   const safeClipIndex = Math.min(Math.max(clipIndex, 0), Math.max(entries.length - 1, 0));
@@ -190,9 +211,11 @@ export function ClipPlayEditor({
   }, [clip, finalizePendingPlay]);
 
   const seekToLocalTime = useCallback(
-    (time: number, autoplay = false) => {
+    (time: number, autoplay = false, persistGameTime = true) => {
       const video = videoRef.current;
       if (!video || !clip) return;
+
+      void warmClip(clip);
 
       const clamped = Math.max(
         0,
@@ -200,7 +223,7 @@ export function ClipPlayEditor({
       );
       video.currentTime = clamped;
       setLocalTime(clamped);
-      if (entry) {
+      if (entry && persistGameTime) {
         onGameTimeChange?.(clipLocalToGameTime(entry, clamped));
       }
 
@@ -217,8 +240,31 @@ export function ClipPlayEditor({
         void video.play().then(() => setIsPlaying(true));
       }
     },
-    [autoEndPendingPlayAtClipEnd, clip, entry, onGameTimeChange],
+    [autoEndPendingPlayAtClipEnd, clip, entry, onGameTimeChange, warmClip],
   );
+
+  useEffect(() => {
+    if (!clip) {
+      setVideoSrc("");
+      return;
+    }
+
+    setVideoSrc(clip.blobUrl);
+
+    let cancelled = false;
+
+    void (async () => {
+      void warmClip(clip);
+      const playbackUrl = await resolvePlaybackUrl(clip);
+      if (!cancelled && playbackUrl !== clip.blobUrl) {
+        setVideoSrc(playbackUrl);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clip, resolvePlaybackUrl, warmClip]);
 
   useEffect(() => {
     if (!clip || !entry) return;
@@ -236,11 +282,24 @@ export function ClipPlayEditor({
     }
 
     const video = videoRef.current;
-    if (video) {
-      video.pause();
+    if (!video) return;
+
+    video.pause();
+
+    const applyStart = () => {
+      seekToLocalTime(localStart, false, false);
+    };
+
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      applyStart();
+      return;
     }
-    seekToLocalTime(localStart, false);
-    // Sync position when the active clip changes, not on every `t` URL update.
+
+    video.addEventListener("loadedmetadata", applyStart, { once: true });
+    return () => {
+      video.removeEventListener("loadedmetadata", applyStart);
+    };
+    // Seek when the active clip changes without writing `t` back to the URL.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.id, safeClipIndex]);
 
@@ -316,9 +375,23 @@ export function ClipPlayEditor({
   );
 
   const markEndAndCreatePlay = useCallback(() => {
-    if (pendingStartGameTime === null) return;
-    finalizePendingPlay(pendingStartGameTime, localTime);
-  }, [finalizePendingPlay, localTime, pendingStartGameTime]);
+    if (!entry) return;
+
+    const startGameTime =
+      pendingStartGameTime ?? clipLocalToGameTime(entry, 0);
+
+    if (pendingStartGameTime === null) {
+      removeWrapperForClip();
+    }
+
+    finalizePendingPlay(startGameTime, localTime);
+  }, [
+    entry,
+    finalizePendingPlay,
+    localTime,
+    pendingStartGameTime,
+    removeWrapperForClip,
+  ]);
 
   const removePlay = (play: PlayDraft) => {
     const targetKey = playIdentityKey(play);
@@ -442,10 +515,17 @@ export function ClipPlayEditor({
     <PlayerStage>
       <div className="surface-card flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Clip {safeClipIndex + 1} of {entries.length}
-          </p>
-          <p className="truncate font-medium">{clip.filename}</p>
+          <button
+            type="button"
+            className="group inline-flex max-w-full items-center gap-1.5 rounded-lg text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            onClick={() => setClipPickerOpen(true)}
+            aria-haspopup="dialog"
+          >
+            <span className="text-lg font-semibold tracking-tight tabular-nums sm:text-xl">
+              Clip {safeClipIndex + 1} of {entries.length}
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary sm:h-5 sm:w-5" />
+          </button>
           {hasWrapper ? (
             <p className="text-xs text-muted-foreground">
               Full-clip placeholder — your first marked play replaces it
@@ -476,6 +556,15 @@ export function ClipPlayEditor({
         </div>
       </div>
 
+      <ClipPicker
+        open={clipPickerOpen}
+        onOpenChange={setClipPickerOpen}
+        entries={entries}
+        plays={plays}
+        currentIndex={safeClipIndex}
+        onSelectClip={onClipIndexChange}
+      />
+
       {timelinePanel}
 
       <div className={playerMainGridClass}>
@@ -485,7 +574,7 @@ export function ClipPlayEditor({
               <video
                 ref={videoRef}
                 key={clip.id}
-                src={clip.blobUrl}
+                src={videoSrc || clip.blobUrl}
                 className={playerVideoClass}
                 playsInline
                 preload="auto"
@@ -535,10 +624,9 @@ export function ClipPlayEditor({
                   </Button>
                 ) : null}
                 <Button
-                  className="rounded-xl bg-primary/90 text-primary-foreground backdrop-blur-sm hover:bg-primary disabled:opacity-50"
-                  disabled={pendingStartGameTime === null}
+                  className="rounded-xl bg-primary/90 text-primary-foreground backdrop-blur-sm hover:bg-primary"
                   onClick={markEndAndCreatePlay}
-                  title="Mark play end and create play"
+                  title="Mark play end and create play (uses clip start if start is not set)"
                 >
                   <Flag className="mr-2 h-4 w-4" />
                   End
@@ -548,7 +636,7 @@ export function ClipPlayEditor({
                 <div className="flex items-center justify-between gap-3 text-xs text-white/90 sm:text-sm">
                   <span className="font-medium">
                     {pendingStartGameTime === null
-                      ? "Set start, then end"
+                      ? "End from clip start"
                       : `Start ${formatDuration(pendingStartLocal ?? 0)}`}
                   </span>
                   <span className="tabular-nums">
@@ -562,7 +650,18 @@ export function ClipPlayEditor({
 
         <Card className={playerPlayListCardClass}>
           <CardHeader className="shrink-0 border-b border-border/60 py-3 max-lg:landscape:py-2">
-            <CardTitle className="font-heading text-sm">Plays in clip</CardTitle>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="font-heading text-sm">Plays in clip</CardTitle>
+              <ClipCacheButton
+                supported={cacheSupported}
+                cachingAll={cachingAll}
+                loadAllProgress={loadAllProgress}
+                allCached={allCached}
+                cachedCount={cachedCount}
+                clipCount={clips.length}
+                onCacheAll={cacheAll}
+              />
+            </div>
           </CardHeader>
           <CardContent
             className={cn(
@@ -573,7 +672,7 @@ export function ClipPlayEditor({
             {clipPlays.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {hasWrapper
-                  ? "No plays marked yet. Use Start and End to define the first play."
+                  ? "No plays marked yet. Use End to mark a play from the clip start, or set Start first."
                   : "No plays in this clip yet."}
               </p>
             ) : null}
@@ -607,11 +706,20 @@ export function ClipPlayEditor({
                     <span className="shrink-0 text-xs font-semibold text-primary">
                       {playNumber}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground tabular-nums">
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="truncate text-xs text-muted-foreground tabular-nums">
                       {formatDuration(gameTimeToClipLocal(entry, play.startTime))}
                       {" – "}
                       {formatDuration(gameTimeToClipLocal(entry, play.endTime))}
                     </span>
+                    {cacheSupported &&
+                    isPlayCached(play.startTime, play.endTime) ? (
+                      <HardDrive
+                        className="h-3.5 w-3.5 shrink-0 text-accent"
+                        aria-label="Cached for offline playback"
+                      />
+                    ) : null}
+                  </div>
                     <div
                       className="flex shrink-0 items-center gap-1"
                       onClick={(e) => e.stopPropagation()}

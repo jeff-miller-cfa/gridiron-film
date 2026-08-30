@@ -362,7 +362,7 @@ export default function AdminGamePage() {
                     className="h-7 shrink-0 gap-1.5 rounded-md px-2.5 text-xs after:hidden data-active:bg-background data-active:text-primary data-active:font-semibold data-active:shadow-sm sm:px-3 sm:text-sm"
                   >
                     <Scissors className="h-3.5 w-3.5" />
-                    Per clip
+                    Clips
                   </TabsTrigger>
                   <TabsTrigger
                     value="export"

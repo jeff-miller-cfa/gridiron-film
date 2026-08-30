@@ -32,8 +32,17 @@ import {
   offenseTimelineTone,
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
+import { ClipCacheButton } from "@/components/clip-cache-button";
+import { useClipCache } from "@/hooks/use-clip-cache";
 import type { PlayRecord, VideoClipRecord } from "@/types";
-import { List, Pause, Play, SkipBack, SkipForward } from "lucide-react";
+import {
+  HardDrive,
+  List,
+  Pause,
+  Play,
+  SkipBack,
+  SkipForward,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   PlayerStage,
@@ -85,6 +94,18 @@ export function GamePlayer({
     [clips, plays],
   );
 
+  const {
+    supported: cacheSupported,
+    cachedCount,
+    loadingAll: cachingAll,
+    loadAllProgress,
+    allCached,
+    warmClip,
+    resolvePlaybackUrl,
+    cacheAll,
+    isPlayCached,
+  } = useClipCache(clips);
+
   const [playbackTime, setPlaybackTime] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -127,7 +148,6 @@ export function GamePlayer({
 
       const clip = located.clip;
       const localTime = located.localTime;
-      const clipUrl = clip.blobUrl;
       const clipId = located.clipId;
       const previousClipId = resolveClipIdFromVideo(video, clipSources);
       const seekToken = ++seekTokenRef.current;
@@ -189,19 +209,33 @@ export function GamePlayer({
           applySeek();
         };
 
-        if (previousClipId !== clipId) {
-          video.addEventListener("loadedmetadata", onMetadata);
-          video.src = clipUrl;
-          video.load();
-          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-            onMetadata();
+        void (async () => {
+          void warmClip(clip);
+          const playbackUrl = await resolvePlaybackUrl(clip);
+          if (seekToken !== seekTokenRef.current) return;
+
+          if (previousClipId !== clipId) {
+            video.addEventListener("loadedmetadata", onMetadata);
+            video.src = playbackUrl;
+            video.load();
+            if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+              onMetadata();
+            }
+          } else {
+            applySeek();
           }
-        } else {
-          applySeek();
-        }
+        })();
       });
     },
-    [playSegments, playbackDuration, persistPlayhead, clips],
+    [
+      playSegments,
+      playbackDuration,
+      persistPlayhead,
+      clips,
+      clipSources,
+      warmClip,
+      resolvePlaybackUrl,
+    ],
   );
 
   const seekToPlay = useCallback(
@@ -334,6 +368,18 @@ export function GamePlayer({
       },
     });
 
+  const cacheButton = (
+    <ClipCacheButton
+      supported={cacheSupported}
+      cachingAll={cachingAll}
+      loadAllProgress={loadAllProgress}
+      allCached={allCached}
+      cachedCount={cachedCount}
+      clipCount={clips.length}
+      onCacheAll={cacheAll}
+    />
+  );
+
   const renderPlayList = (constrained = false) => (
     <div
       className={cn(
@@ -375,9 +421,18 @@ export function GamePlayer({
                   </span>
                 ) : null}
               </div>
-              <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                {formatDuration(segment.duration)}
-              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {cacheSupported &&
+                isPlayCached(segment.globalStart, segment.globalEnd) ? (
+                  <HardDrive
+                    className="h-3.5 w-3.5 text-accent"
+                    aria-label="Cached for offline playback"
+                  />
+                ) : null}
+                <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  {formatDuration(segment.duration)}
+                </span>
+              </div>
             </div>
             {play.notes && (
               <p className="mt-1 line-clamp-2 text-xs text-muted-foreground max-lg:landscape:line-clamp-1">
@@ -621,9 +676,12 @@ export function GamePlayer({
             </SheetTrigger>
             <SheetContent side="bottom" className="h-[75vh] rounded-t-2xl">
               <SheetHeader>
-                <SheetTitle className="font-heading">
-                  {awayTeam} @ {homeTeam}
-                </SheetTitle>
+                <div className="flex items-center justify-between gap-3">
+                  <SheetTitle className="font-heading">
+                    {awayTeam} @ {homeTeam}
+                  </SheetTitle>
+                  {cacheButton}
+                </div>
               </SheetHeader>
               <div className="mt-4">{renderPlayList(true)}</div>
             </SheetContent>
@@ -633,9 +691,12 @@ export function GamePlayer({
 
       <Card className={cn(playerPlayListCardClass, "hidden max-lg:landscape:flex lg:flex")}>
         <CardHeader className="shrink-0 border-b border-border/60 pb-4 max-lg:landscape:py-2 max-lg:landscape:pb-2">
-          <CardTitle className="font-heading text-lg max-lg:landscape:text-sm">
-            Play list
-          </CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="font-heading text-lg max-lg:landscape:text-sm">
+              Play list
+            </CardTitle>
+            {cacheButton}
+          </div>
         </CardHeader>
         <CardContent className={cn(playerPlayListContentClass, "p-4 max-lg:landscape:p-2")}>
           {renderPlayList()}

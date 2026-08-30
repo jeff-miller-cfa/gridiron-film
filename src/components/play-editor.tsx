@@ -44,7 +44,7 @@ import {
   playTimelineSegmentClass,
 } from "@/lib/play-timeline-colors";
 import type { PlayDraft, PlayGap, PlayRecord, VideoClipRecord } from "@/types";
-import { Eye, EyeOff, Pause, Pencil, Play, RotateCcw, Scissors, StickyNote, Trash2 } from "lucide-react";
+import { Eye, EyeOff, HardDrive, Pause, Pencil, Play, RotateCcw, Scissors, StickyNote, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   PlayerStage,
@@ -57,8 +57,10 @@ import {
   playerVideoShellClass,
 } from "@/components/player-stage";
 import { ClipPlayEditor } from "@/components/clip-play-editor";
+import { ClipCacheButton } from "@/components/clip-cache-button";
 import { PlayerLoopToggle } from "@/components/player-loop-toggle";
 import { PlayerVideoOverlay } from "@/components/player-video-overlay";
+import { useClipCache } from "@/hooks/use-clip-cache";
 
 type EditMode = "game" | "clip";
 
@@ -104,8 +106,10 @@ export function PlayEditor({
   const setClipIndex = useCallback(
     (index: number) => {
       const next = new URLSearchParams(searchParams.toString());
+      const safeIndex = Math.max(0, index);
       next.set("view", "clip");
-      next.set("clip", String(Math.max(0, index)));
+      next.set("clip", String(safeIndex));
+      next.delete("t");
       next.delete("mode");
       router.replace(`${pathname}?${next.toString()}`, { scroll: false });
     },
@@ -178,6 +182,19 @@ export function PlayEditor({
 
   const sortedPlays = useMemo(() => sortPlays(plays), [plays]);
 
+  const clipCache = useClipCache(clips);
+  const {
+    supported: cacheSupported,
+    warmClip,
+    resolvePlaybackUrl,
+    cacheAll,
+    loadingAll: cachingAll,
+    loadAllProgress,
+    allCached,
+    cachedCount,
+    isPlayCached,
+  } = clipCache;
+
   const fullPosition = playbackToFullPosition(playbackTime, playSegments);
   const timelineDuration = showGapsOnTimeline ? fullDuration : playbackDuration;
   const timelinePosition = showGapsOnTimeline ? fullPosition : playbackTime;
@@ -211,7 +228,6 @@ export function PlayEditor({
 
       const clip = located.clip;
       const localTime = located.localTime;
-      const clipUrl = clip.blobUrl;
       const clipId = located.clipId;
       const previousClipId = resolveClipIdFromVideo(video, clips);
       const seekToken = ++seekTokenRef.current;
@@ -275,19 +291,32 @@ export function PlayEditor({
           applySeek();
         };
 
-        if (previousClipId !== clipId) {
-          video.addEventListener("loadedmetadata", onMetadata);
-          video.src = clipUrl;
-          video.load();
-          if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-            onMetadata();
+        void (async () => {
+          void warmClip(clip);
+          const playbackUrl = await resolvePlaybackUrl(clip);
+          if (seekToken !== seekTokenRef.current) return;
+
+          if (previousClipId !== clipId) {
+            video.addEventListener("loadedmetadata", onMetadata);
+            video.src = playbackUrl;
+            video.load();
+            if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+              onMetadata();
+            }
+          } else {
+            applySeek();
           }
-        } else {
-          applySeek();
-        }
+        })();
       });
     },
-    [playSegments, playbackDuration, persistPlayhead, clips],
+    [
+      playSegments,
+      playbackDuration,
+      persistPlayhead,
+      clips,
+      warmClip,
+      resolvePlaybackUrl,
+    ],
   );
 
   const seekToFullPosition = useCallback(
@@ -447,11 +476,17 @@ export function PlayEditor({
 
   useEffect(() => {
     if (mode !== "clip" || !persisted) return;
+
     const targetClipIndex = clipIndexForGameTime(persisted.gameTime, clips);
-    if (targetClipIndex !== clipIndex) {
-      setClipIndex(targetClipIndex);
-    }
-  }, [clipIndex, clips, mode, persisted, setClipIndex]);
+    const currentClipIndex = parseClipIndex(searchParams.get("clip"));
+    if (targetClipIndex === currentClipIndex) return;
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("view", "clip");
+    next.set("clip", String(targetClipIndex));
+    next.delete("mode");
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }, [clips, mode, pathname, persisted?.gameTime, router, searchParams]);
 
   useEffect(() => {
     if (!selectedPlayId) return;
@@ -547,6 +582,7 @@ export function PlayEditor({
         awayTeam={awayTeam}
         clipIndex={clipIndex}
         playLookbackSeconds={lookbackSeconds}
+        clipCache={clipCache}
         onClipIndexChange={setClipIndex}
         onChange={onChange}
         initialGameTime={persisted?.gameTime ?? null}
@@ -599,6 +635,17 @@ export function PlayEditor({
 
   const timelineSegments = showGapsOnTimeline ? segments : playSegments;
   const playListSegments = showGapsOnTimeline ? segments : playSegments;
+  const cacheButton = (
+    <ClipCacheButton
+      supported={cacheSupported}
+      cachingAll={cachingAll}
+      loadAllProgress={loadAllProgress}
+      allCached={allCached}
+      cachedCount={cachedCount}
+      clipCount={clips.length}
+      onCacheAll={cacheAll}
+    />
+  );
 
   const timelinePanel = (
     <div className="surface-card shrink-0 space-y-2 p-4 max-lg:landscape:py-3">
@@ -805,7 +852,9 @@ export function PlayEditor({
         <CardHeader className="shrink-0 border-b border-border/60 py-3 max-lg:landscape:py-2">
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="font-heading text-sm">All plays</CardTitle>
-            {gapSegments.length > 0 ? (
+            <div className="flex items-center gap-2">
+              {cacheButton}
+              {gapSegments.length > 0 ? (
               <Button
                 type="button"
                 variant="outline"
@@ -820,7 +869,8 @@ export function PlayEditor({
                 )}
                 {showGapsOnTimeline ? "Hide gaps" : "Show gaps"}
               </Button>
-            ) : null}
+              ) : null}
+            </div>
           </div>
         </CardHeader>
         <CardContent
@@ -882,9 +932,18 @@ export function PlayEditor({
                   <span className="shrink-0 text-xs font-semibold text-primary">
                     {playNumber ?? "—"}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground tabular-nums">
-                    {formatDuration(duration)}
-                  </span>
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="truncate text-xs text-muted-foreground tabular-nums">
+                      {formatDuration(duration)}
+                    </span>
+                    {cacheSupported &&
+                    isPlayCached(segment.globalStart, segment.globalEnd) ? (
+                      <HardDrive
+                        className="h-3.5 w-3.5 shrink-0 text-accent"
+                        aria-label="Cached for offline playback"
+                      />
+                    ) : null}
+                  </div>
                   <div
                     className="flex shrink-0 items-center gap-1"
                     onClick={(e) => e.stopPropagation()}

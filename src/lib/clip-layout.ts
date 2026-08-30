@@ -142,3 +142,21 @@ export function slicesForGameRange(
 
   return slices;
 }
+
+export function clipIdsForGameRange(
+  rangeStart: number,
+  rangeEnd: number,
+  clips: VideoClipRecord[],
+): string[] {
+  const { entries } = buildClipLayout(clips);
+  const ids: string[] = [];
+
+  for (const entry of entries) {
+    const overlapStart = Math.max(rangeStart, entry.gameStart);
+    const overlapEnd = Math.min(rangeEnd, entry.gameEnd);
+    if (overlapEnd - overlapStart <= 0.05) continue;
+    ids.push(entry.clip.id);
+  }
+
+  return ids;
+}

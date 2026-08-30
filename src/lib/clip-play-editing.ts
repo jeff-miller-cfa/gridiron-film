@@ -119,6 +119,63 @@ export function clipHasWrapperPlay(
   return plays.some((play) => isFullClipWrapperPlay(play, entry));
 }
 
+export type ClipPlayTag = {
+  playNumber: number;
+  duration: number;
+};
+
+export type ClipPlaySummary = {
+  hasWrapper: boolean;
+  isEmpty: boolean;
+  playCount: number;
+  statusMessage: string | null;
+  plays: ClipPlayTag[];
+};
+
+export function clipPlaySummary(
+  plays: PlayDraft[],
+  entry: ClipLayoutEntry,
+): ClipPlaySummary {
+  const hasWrapper = clipHasWrapperPlay(plays, entry);
+  const clipPlays = playsInClip(plays, entry);
+  const playCount = clipPlays.length;
+
+  if (hasWrapper) {
+    return {
+      hasWrapper: true,
+      isEmpty: false,
+      playCount: 0,
+      statusMessage: null,
+      plays: [],
+    };
+  }
+
+  if (playCount === 0) {
+    return {
+      hasWrapper: false,
+      isEmpty: true,
+      playCount: 0,
+      statusMessage: null,
+      plays: [],
+    };
+  }
+
+  const playTags = clipTimelineSegments(plays, entry)
+    .map((segment) => ({
+      playNumber: playNumberInGame(plays, segment.play),
+      duration: segment.duration,
+    }))
+    .filter((tag) => tag.playNumber > 0);
+
+  return {
+    hasWrapper: false,
+    isEmpty: false,
+    playCount,
+    statusMessage: null,
+    plays: playTags,
+  };
+}
+
 export function playNumberInGame(
   plays: PlayDraft[],
   play: PlayDraft,
