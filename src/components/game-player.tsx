@@ -470,6 +470,19 @@ export function GamePlayer({
     );
   }
 
+  const currentPlayPos = playSegments.findIndex(
+    (s) => s.playIndex === currentIndex,
+  );
+  const canGoPrev = currentPlayPos > 0;
+  const canGoNext =
+    currentPlayPos >= 0 && currentPlayPos < playSegments.length - 1;
+  const goToPrevPlay = () => {
+    if (canGoPrev) seekToPlay(playSegments[currentPlayPos - 1].playIndex, true);
+  };
+  const goToNextPlay = () => {
+    if (canGoNext) seekToPlay(playSegments[currentPlayPos + 1].playIndex, true);
+  };
+
   const currentPlayNumber =
     currentSegment?.playNumber ?? currentIndex + 1;
   const playPosition = currentSegment
@@ -626,6 +639,53 @@ export function GamePlayer({
                 ) : null
               }
             />
+            {isFullscreen ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-20 z-20 flex justify-center max-lg:landscape:bottom-14">
+                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-white/15 bg-black/55 p-1.5 backdrop-blur-sm">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="rounded-xl text-white hover:bg-white/15 hover:text-white disabled:opacity-40"
+                    disabled={!canGoPrev}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToPrevPlay();
+                    }}
+                    aria-label="Previous play"
+                  >
+                    <SkipBack className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    className="h-11 w-11 rounded-xl bg-white/15 text-white hover:bg-white/25"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void togglePlay();
+                    }}
+                    aria-label={isPlaying ? "Pause" : "Play"}
+                  >
+                    {isPlaying ? (
+                      <Pause className="h-5 w-5" />
+                    ) : (
+                      <Play className="h-5 w-5" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="rounded-xl text-white hover:bg-white/15 hover:text-white disabled:opacity-40"
+                    disabled={!canGoNext}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToNextPlay();
+                    }}
+                    aria-label="Next play"
+                  >
+                    <SkipForward className="h-5 w-5" />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -635,15 +695,8 @@ export function GamePlayer({
               variant="outline"
               size="icon"
               className="rounded-xl"
-              disabled={
-                playSegments.findIndex((s) => s.playIndex === currentIndex) <= 0
-              }
-              onClick={() => {
-                const idx = playSegments.findIndex(
-                  (s) => s.playIndex === currentIndex,
-                );
-                if (idx > 0) seekToPlay(playSegments[idx - 1].playIndex, true);
-              }}
+              disabled={!canGoPrev}
+              onClick={goToPrevPlay}
             >
               <SkipBack className="h-4 w-4" />
             </Button>
@@ -668,25 +721,14 @@ export function GamePlayer({
               variant="outline"
               size="icon"
               className="rounded-xl"
-              disabled={
-                playSegments.findIndex((s) => s.playIndex === currentIndex) >=
-                playSegments.length - 1
-              }
-              onClick={() => {
-                const idx = playSegments.findIndex(
-                  (s) => s.playIndex === currentIndex,
-                );
-                if (idx < playSegments.length - 1) {
-                  seekToPlay(playSegments[idx + 1].playIndex, true);
-                }
-              }}
+              disabled={!canGoNext}
+              onClick={goToNextPlay}
             >
               <SkipForward className="h-4 w-4" />
             </Button>
           </div>
           <p className="text-sm font-medium text-muted-foreground max-lg:landscape:hidden">
-            {playSegments.findIndex((s) => s.playIndex === currentIndex) + 1}{" "}
-            of {playSegments.length}
+            {currentPlayPos + 1} of {playSegments.length}
           </p>
         </div>
 
