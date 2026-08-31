@@ -116,10 +116,11 @@ export function GamePlayer({
   const loopPlayRef = useRef(false);
   loopPlayRef.current = loopPlay;
 
-  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(
-    videoFrameRef,
-    videoRef,
-  );
+  const {
+    isFullscreen,
+    isPseudoFullscreen,
+    toggle: toggleFullscreen,
+  } = useFullscreen(videoFrameRef);
 
   const currentSegment =
     playSegments.find((s) => s.playIndex === currentIndex) ?? playSegments[0];
@@ -577,10 +578,20 @@ export function GamePlayer({
       <div className={playerMainGridClass}>
       <div className={playerVideoColumnClass}>
         <div className={playerVideoShellClass}>
-          <div ref={videoFrameRef} className={playerVideoFrameClass}>
+          <div
+            ref={videoFrameRef}
+            className={cn(
+              playerVideoFrameClass,
+              isPseudoFullscreen &&
+                "fixed inset-0 z-[100] flex-none rounded-none bg-black max-lg:portrait:aspect-auto",
+            )}
+          >
             <video
               ref={videoRef}
-              className={playerVideoClass}
+              className={cn(
+                playerVideoClass,
+                isPseudoFullscreen && "!aspect-auto !h-full !w-full",
+              )}
               playsInline
               preload="auto"
               controls={false}
