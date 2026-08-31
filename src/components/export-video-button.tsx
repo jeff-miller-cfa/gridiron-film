@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { slicesForGameRange } from "@/lib/clip-layout";
 import { sortPlays } from "@/lib/plays";
 import { getClipPlaybackUrl } from "@/lib/clip-cache";
-import { getExportFfmpegPool, getFfmpeg } from "@/lib/ffmpeg-client";
+import { getExportFfmpegPool, getFfmpeg, toErrorMessage } from "@/lib/ffmpeg-client";
 import type { PlayRecord, VideoClipRecord } from "@/types";
 import {
   CheckCircle2,
@@ -32,8 +32,73 @@ type PlayProgress = {
   status: PlayStatus;
 };
 
+// ffmpeg.wasm's exec() does not reliably return 0 on success in this build, and
+// it never throws on failure — a failed command just leaves its output file
+// missing, which later surfaces as a cryptic "ErrnoError: FS error" on readFile.
+// So we judge success by whether the expected output file exists, and capture
+// ffmpeg's log stream to report the real reason when it doesn't.
+async function execChecked(
+  ffmpeg: FFmpeg,
+  args: string[],
+  context: string,
+  outputFile: string,
+): Promise<void> {
+  const logs: string[] = [];
+  const onLog = (entry: { type: string; message: string }) => {
+    logs.push(entry.message);
+    if (logs.length > 60) logs.shift();
+  };
+  ffmpeg.on("log", onLog);
+  try {
+    await ffmpeg.exec(args);
+  } finally {
+    ffmpeg.off("log", onLog);
+  }
+
+  let exists = false;
+  try {
+    const entries = await ffmpeg.listDir(".");
+    exists = entries.some((e) => e.name === outputFile && !e.isDir);
+  } catch {
+    exists = false;
+  }
+
+  if (!exists) {
+    const tail = logs
+      .filter((line) => line.trim())
+      .slice(-8)
+      .join(" ⏎ ")
+      .trim();
+    throw new Error(`${context} failed${tail ? `: ${tail}` : ""}`);
+  }
+}
+
+// The ffmpeg.wasm core has no fonts in its virtual filesystem, so drawtext must
+// be pointed at a font file we load in ourselves (served from /public).
+const OVERLAY_FONT_URL = "/fonts/overlay.ttf";
+const OVERLAY_FONT_FS_NAME = "overlay.ttf";
+
+let overlayFontBytes: Promise<Uint8Array> | null = null;
+// ffmpeg.writeFile transfers (detaches) the buffer it's given, so hand each
+// worker a fresh copy while keeping our cached master intact.
+async function getOverlayFontBytes(): Promise<Uint8Array> {
+  if (!overlayFontBytes) {
+    overlayFontBytes = fetchFile(OVERLAY_FONT_URL).then((data) =>
+      Uint8Array.from(data as Uint8Array),
+    );
+  }
+  return Uint8Array.from(await overlayFontBytes);
+}
+
+const fontReadyInstances = new WeakSet<FFmpeg>();
+async function ensureOverlayFont(ffmpeg: FFmpeg): Promise<void> {
+  if (fontReadyInstances.has(ffmpeg)) return;
+  await ffmpeg.writeFile(OVERLAY_FONT_FS_NAME, await getOverlayFontBytes());
+  fontReadyInstances.add(ffmpeg);
+}
+
 function drawtextFilter(playNumber: number): string {
-  return `drawtext=text='Play ${playNumber}':fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8:x=(w-text_w)/2:y=h-th-20`;
+  return `drawtext=fontfile=${OVERLAY_FONT_FS_NAME}:text='Play ${playNumber}':fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8:x=(w-text_w)/2:y=h-th-20`;
 }
 
 function formatTime(seconds: number): string {
@@ -50,6 +115,7 @@ export function ExportVideoButton({
 }: ExportVideoButtonProps) {
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState("");
+  const [muteAudio, setMuteAudio] = useState(false);
   const [playProgress, setPlayProgress] = useState<PlayProgress[]>([]);
 
   const setPlayStatus = (index: number, next: PlayStatus) => {
@@ -95,15 +161,18 @@ export function ExportVideoButton({
     );
 
     const pool = getExportFfmpegPool();
+    const mute = muteAudio;
+    // Muted exports drop audio entirely; otherwise re-encode to AAC.
+    const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
 
-    // Encode one play (cut its slices, burn in the label) on a pooled worker
-    // and return the finished MP4 bytes. Runs in parallel across workers.
-    const processJob = async (
+    // Encode one play (cut its slices, burn in the label) on the given worker
+    // and return the finished MP4 bytes.
+    const encodeOnce = async (
+      ffmpeg: FFmpeg,
       job: (typeof jobs)[number],
       jobIndex: number,
     ): Promise<Uint8Array> => {
-      const ffmpeg = await pool.acquire();
-      setPlayStatus(jobIndex, "processing");
+      await ensureOverlayFont(ffmpeg);
 
       const scratch: string[] = [];
       const cleanup = async () => {
@@ -133,44 +202,52 @@ export function ExportVideoButton({
           if (job.slices.length === 1) {
             // Single slice: cut and label in one encode.
             const outputName = `j${jobIndex}_play.mp4`;
-            await ffmpeg.exec([
-              "-ss",
-              String(slice.localStart),
-              "-i",
-              inputName,
-              "-t",
-              String(slice.duration),
-              "-vf",
-              drawtextFilter(job.playNumber),
-              "-c:v",
-              "libx264",
-              "-preset",
-              "ultrafast",
-              "-c:a",
-              "aac",
-              "-y",
+            await execChecked(
+              ffmpeg,
+              [
+                "-ss",
+                String(slice.localStart),
+                "-i",
+                inputName,
+                "-t",
+                String(slice.duration),
+                "-vf",
+                drawtextFilter(job.playNumber),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                ...audioArgs,
+                "-y",
+                outputName,
+              ],
+              `Play ${job.playNumber} encode`,
               outputName,
-            ]);
+            );
             partFiles.push(outputName);
             scratch.push(outputName);
           } else {
             const partName = `j${jobIndex}_part${s}.mp4`;
-            await ffmpeg.exec([
-              "-ss",
-              String(slice.localStart),
-              "-i",
-              inputName,
-              "-t",
-              String(slice.duration),
-              "-c:v",
-              "libx264",
-              "-preset",
-              "ultrafast",
-              "-c:a",
-              "aac",
-              "-y",
+            await execChecked(
+              ffmpeg,
+              [
+                "-ss",
+                String(slice.localStart),
+                "-i",
+                inputName,
+                "-t",
+                String(slice.duration),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                ...audioArgs,
+                "-y",
+                partName,
+              ],
+              `Play ${job.playNumber} slice ${s + 1}`,
               partName,
-            ]);
+            );
             partFiles.push(partName);
             scratch.push(partName);
           }
@@ -188,24 +265,28 @@ export function ExportVideoButton({
           scratch.push(listName);
 
           playFile = `j${jobIndex}_play.mp4`;
-          await ffmpeg.exec([
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            listName,
-            "-vf",
-            drawtextFilter(job.playNumber),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-c:a",
-            "aac",
-            "-y",
+          await execChecked(
+            ffmpeg,
+            [
+              "-f",
+              "concat",
+              "-safe",
+              "0",
+              "-i",
+              listName,
+              "-vf",
+              drawtextFilter(job.playNumber),
+              "-c:v",
+              "libx264",
+              "-preset",
+              "ultrafast",
+              ...audioArgs,
+              "-y",
+              playFile,
+            ],
+            `Play ${job.playNumber} concat`,
             playFile,
-          ]);
+          );
           scratch.push(playFile);
         }
 
@@ -213,33 +294,79 @@ export function ExportVideoButton({
         // Copy the bytes out of the worker FS before we delete the file.
         const bytes = Uint8Array.from(data as Uint8Array);
         await cleanup();
-        setPlayStatus(jobIndex, "done");
         return bytes;
       } catch (error) {
-        await cleanup();
-        setPlayStatus(jobIndex, "error");
+        // Leave FS cleanup to whoever owns this instance next — on failure the
+        // worker is discarded, so there's nothing to clean up.
         throw error;
-      } finally {
-        pool.release(ffmpeg);
       }
     };
 
+    // Run one play, retrying on a fresh worker if the wasm instance crashes
+    // (e.g. "memory access out of bounds"). A crashed instance is discarded
+    // rather than returned to the pool, so it can't poison later plays.
+    const processJob = async (
+      job: (typeof jobs)[number],
+      jobIndex: number,
+      attempts: number,
+    ): Promise<Uint8Array> => {
+      let lastError: unknown;
+
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        const ffmpeg = await pool.acquire();
+        setPlayStatus(jobIndex, "processing");
+        try {
+          const bytes = await encodeOnce(ffmpeg, job, jobIndex);
+          pool.release(ffmpeg);
+          setPlayStatus(jobIndex, "done");
+          return bytes;
+        } catch (error) {
+          lastError = error;
+          // The instance may be corrupted after a crash — drop it entirely.
+          pool.discard(ffmpeg);
+        }
+      }
+
+      setPlayStatus(jobIndex, "error");
+      throw lastError;
+    };
+
     try {
-      // Kick off every play; the pool caps how many actually run at once.
+      // First pass: encode every play in parallel across the worker pool.
       setStatus(`Processing ${jobs.length} plays...`);
+      const results: (Uint8Array | null)[] = new Array(jobs.length).fill(null);
       const settled = await Promise.allSettled(
-        jobs.map((job, index) => processJob(job, index)),
+        jobs.map((job, index) => processJob(job, index, 2)),
       );
+      settled.forEach((result, index) => {
+        if (result.status === "fulfilled") results[index] = result.value;
+      });
 
-      const encoded = settled
-        .map((result, index) => ({ result, playNumber: jobs[index]!.playNumber }))
-        .filter(
-          (row): row is { result: PromiseFulfilledResult<Uint8Array>; playNumber: number } =>
-            row.result.status === "fulfilled",
-        )
-        .map((row) => row.result.value);
+      // Second pass: a burst of parallel encodes can transiently exhaust wasm
+      // memory and drop a cluster of plays. Retry any stragglers one at a time,
+      // now that the parallel pass has freed its workers — dropping plays here
+      // would leave gaps in the stitched sequence.
+      const stragglers = results
+        .map((value, index) => (value === null ? index : -1))
+        .filter((index) => index >= 0);
+      if (stragglers.length > 0) {
+        setStatus(
+          `Retrying ${stragglers.length} play${stragglers.length === 1 ? "" : "s"}...`,
+        );
+        for (const index of stragglers) {
+          try {
+            results[index] = await processJob(jobs[index]!, index, 2);
+          } catch {
+            // still failed; it will be reported as skipped below
+          }
+        }
+      }
 
-      const failedCount = settled.length - encoded.length;
+      // Preserve play order — results is indexed by job, nulls are drops.
+      const encoded = results.filter(
+        (value): value is Uint8Array => value !== null,
+      );
+      const failedCount = jobs.length - encoded.length;
 
       if (encoded.length === 0) {
         throw new Error("Every play failed to export.");
@@ -262,7 +389,7 @@ export function ExportVideoButton({
           : "Export complete!",
       );
     } catch (error) {
-      setStatus(`Export failed: ${(error as Error).message}`);
+      setStatus(`Export failed: ${toErrorMessage(error, "unknown error")}`);
     } finally {
       setExporting(false);
     }
@@ -275,13 +402,25 @@ export function ExportVideoButton({
 
   return (
     <div className="space-y-3">
-      <Button
-        onClick={() => void exportVideo()}
-        disabled={exporting || !plays.length || !clips.length}
-      >
-        <Download className="mr-2 h-4 w-4" />
-        {exporting ? "Exporting..." : "Download stitched video"}
-      </Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          onClick={() => void exportVideo()}
+          disabled={exporting || !plays.length || !clips.length}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          {exporting ? "Exporting..." : "Download stitched video"}
+        </Button>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            className="h-4 w-4"
+            checked={muteAudio}
+            disabled={exporting}
+            onChange={(e) => setMuteAudio(e.target.checked)}
+          />
+          Mute audio
+        </label>
+      </div>
 
       {playProgress.length > 0 && (
         <div className="space-y-2">
@@ -345,18 +484,23 @@ async function stitchPlays(plays: Uint8Array[]): Promise<Blob> {
       files.map((f) => `file '${f}'`).join("\n"),
     );
 
-    await ffmpeg.exec([
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      "concat.txt",
-      "-c",
-      "copy",
-      "-y",
+    await execChecked(
+      ffmpeg,
+      [
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        "concat.txt",
+        "-c",
+        "copy",
+        "-y",
+        "output.mp4",
+      ],
+      "Final stitch",
       "output.mp4",
-    ]);
+    );
 
     const data = await ffmpeg.readFile("output.mp4");
     return bytesToBlob(Uint8Array.from(data as Uint8Array));

@@ -5,7 +5,10 @@ const FFMPEG_CORE_BASE = "/ffmpeg";
 let ffmpegInstance: FFmpeg | null = null;
 let ffmpegLoadPromise: Promise<FFmpeg> | null = null;
 
-function toErrorMessage(error: unknown): string {
+export function toErrorMessage(
+  error: unknown,
+  fallback = "Failed to load video processor",
+): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
   if (error && typeof error === "object") {
@@ -14,7 +17,7 @@ function toErrorMessage(error: unknown): string {
       return maybe.message;
     }
   }
-  return "Failed to load video processor";
+  return fallback;
 }
 
 async function loadFfmpegInstance(ffmpeg: FFmpeg): Promise<FFmpeg> {
@@ -55,6 +58,12 @@ export function getUploadFfmpegPoolSize(): number {
   return Math.min(3, Math.max(2, Math.floor(cores / 2)));
 }
 
+export function getExportFfmpegPoolSize(): number {
+  if (typeof navigator === "undefined") return 2;
+  const cores = navigator.hardwareConcurrency ?? 4;
+  return Math.min(6, Math.max(2, cores));
+}
+
 export class FfmpegPool {
   private readonly maxWorkers: number;
   private readonly available: FFmpeg[] = [];
@@ -72,7 +81,13 @@ export class FfmpegPool {
 
     if (this.activeWorkers < this.maxWorkers) {
       this.activeWorkers += 1;
-      return createFfmpegInstance();
+      try {
+        return await createFfmpegInstance();
+      } catch (error) {
+        // Free the slot so a later acquire can try again.
+        this.activeWorkers -= 1;
+        throw error;
+      }
     }
 
     return new Promise((resolve) => {
@@ -87,6 +102,28 @@ export class FfmpegPool {
       return;
     }
     this.available.push(ffmpeg);
+  }
+
+  // Permanently drop a worker that may be corrupted (e.g. after a wasm crash):
+  // terminate it and free its slot. If callers are waiting, spin up a fresh
+  // replacement for one of them so the pool doesn't stall below capacity.
+  discard(ffmpeg: FFmpeg) {
+    try {
+      ffmpeg.terminate();
+    } catch {
+      // best-effort termination
+    }
+    this.activeWorkers -= 1;
+
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      this.activeWorkers += 1;
+      createFfmpegInstance()
+        .then(waiter)
+        .catch(() => {
+          this.activeWorkers -= 1;
+        });
+    }
   }
 }
 
@@ -103,7 +140,7 @@ let exportFfmpegPool: FfmpegPool | null = null;
 
 export function getExportFfmpegPool(): FfmpegPool {
   if (!exportFfmpegPool) {
-    exportFfmpegPool = new FfmpegPool();
+    exportFfmpegPool = new FfmpegPool(getExportFfmpegPoolSize());
   }
   return exportFfmpegPool;
 }

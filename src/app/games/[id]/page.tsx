@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { PageShell } from "@/components/page-shell";
 import { GamePlayer } from "@/components/game-player";
+import { ExportVideoButton } from "@/components/export-video-button";
 import { Badge } from "@/components/ui/badge";
 import { formatGameDate } from "@/lib/video";
 import { getGameById } from "@/lib/games";
@@ -43,6 +44,20 @@ export default async function GameWatchPage({ params }: PageProps) {
               {plays.length} plays
             </Badge>
           </div>
+
+          {plays.length > 0 && (game.videoClips ?? []).length > 0 && (
+            <div className="mt-6 border-t border-border pt-6">
+              <ExportVideoButton
+                plays={plays}
+                clips={game.videoClips ?? []}
+                gameTitle={`${game.awayTeam}-at-${game.homeTeam}`}
+              />
+              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+                Export stitches all active plays into a single video with play
+                numbers in a footer overlay.
+              </p>
+            </div>
+          )}
         </div>
 
         <GamePlayer
