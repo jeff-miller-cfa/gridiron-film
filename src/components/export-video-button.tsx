@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { slicesForGameRange } from "@/lib/clip-layout";
 import { sortPlays } from "@/lib/plays";
+import { getClipPlaybackUrl } from "@/lib/clip-cache";
 import { getFfmpeg } from "@/lib/ffmpeg-client";
 import type { PlayRecord, VideoClipRecord } from "@/types";
 import { Download } from "lucide-react";
@@ -33,6 +34,8 @@ export function ExportVideoButton({
     setProgress(0);
     setStatus("Loading video processor...");
 
+    const clipsById = new Map(clips.map((clip) => [clip.id, clip]));
+
     try {
       const ffmpeg = await getFfmpeg();
       ffmpeg.on("progress", ({ progress: ratio }) => {
@@ -55,7 +58,12 @@ export function ExportVideoButton({
           const inputName = `input_${segmentIndex}.mp4`;
           const outputName = `segment_${segmentIndex}.mp4`;
 
-          await ffmpeg.writeFile(inputName, await fetchFile(slice.blobUrl));
+          const clip = clipsById.get(slice.clipId);
+          const sourceUrl = clip
+            ? await getClipPlaybackUrl(clip)
+            : slice.blobUrl;
+
+          await ffmpeg.writeFile(inputName, await fetchFile(sourceUrl));
           await ffmpeg.exec([
             "-ss",
             String(slice.localStart),

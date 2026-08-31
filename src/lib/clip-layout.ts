@@ -114,6 +114,7 @@ export function clipTimeToGameTime(
 }
 
 export type PlayClipSlice = {
+  clipId: string;
   blobUrl: string;
   localStart: number;
   duration: number;
@@ -134,6 +135,7 @@ export function slicesForGameRange(
     if (duration <= 0.05) continue;
 
     slices.push({
+      clipId: entry.clip.id,
       blobUrl: entry.clip.blobUrl,
       localStart: overlapStart - entry.gameStart,
       duration,
