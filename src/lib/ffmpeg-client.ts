@@ -98,3 +98,12 @@ export function getUploadFfmpegPool(): FfmpegPool {
   }
   return uploadFfmpegPool;
 }
+
+let exportFfmpegPool: FfmpegPool | null = null;
+
+export function getExportFfmpegPool(): FfmpegPool {
+  if (!exportFfmpegPool) {
+    exportFfmpegPool = new FfmpegPool();
+  }
+  return exportFfmpegPool;
+}
