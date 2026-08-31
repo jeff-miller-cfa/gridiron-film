@@ -24,6 +24,13 @@ export type ExportSource = {
   gameTitle: string;
 };
 
+export type ExportOptions = {
+  muteAudio?: boolean;
+  // When set, export only these plays (by id); numbering still reflects the
+  // full game. Omit to export every play with footage.
+  playIds?: string[];
+};
+
 type PlayStatus = "pending" | "processing" | "done" | "error";
 
 type PlayProgress = {
@@ -108,6 +115,41 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+export type ExportablePlay = {
+  id: string;
+  playNumber: number;
+  label: string;
+  detail: string;
+};
+
+// The plays that can actually be exported (have overlapping footage), numbered
+// by their position in the full game. Shared by the selection UI so its numbers
+// match what the export burns in.
+export function getExportablePlays({
+  plays,
+  clips,
+}: Pick<ExportSource, "plays" | "clips">): ExportablePlay[] {
+  return sortPlays(plays)
+    .map((play, index) => ({
+      play,
+      playNumber: index + 1,
+      hasFootage:
+        slicesForGameRange(play.startTime, play.endTime, clips).length > 0,
+    }))
+    .filter((row) => row.hasFootage)
+    .map((row) => ({
+      id: row.play.id,
+      playNumber: row.playNumber,
+      label: `Play ${row.playNumber}`,
+      detail: [
+        row.play.offenseTeam ?? undefined,
+        `${formatTime(row.play.startTime)}–${formatTime(row.play.endTime)}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    }));
+}
+
 // Shared export engine. Owns progress state and the full encode/stitch/download
 // pipeline; UIs (the admin button, the viewer drawer) just call `start`.
 export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
@@ -121,27 +163,43 @@ export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
     );
   };
 
-  const exportVideo = async (mute: boolean) => {
+  const exportVideo = async (options: ExportOptions = {}) => {
+    const { muteAudio: mute = false, playIds } = options;
     if (exporting) return;
     const sortedPlays = sortPlays(plays);
     if (!sortedPlays.length || !clips.length) return;
 
     const clipsById = new Map(clips.map((clip) => [clip.id, clip]));
 
-    // Resolve each play's slices up front so we can build the checklist and
-    // skip plays that have no overlapping footage.
+    // Number plays by their position in the full game, then keep only the ones
+    // with footage and (when a selection is given) the ones asked for — so the
+    // "Play N" overlay always shows the real play number, even for a subset.
+    const selected = playIds ? new Set(playIds) : null;
     const jobs = sortedPlays
       .map((play, index) => ({
         play,
         playNumber: index + 1,
         slices: slicesForGameRange(play.startTime, play.endTime, clips),
       }))
-      .filter((job) => job.slices.length > 0);
+      .filter((job) => job.slices.length > 0)
+      .filter((job) => !selected || selected.has(job.play.id));
 
     if (jobs.length === 0) {
       setStatus("No plays have footage to export.");
       return;
     }
+
+    // Name the file for what's actually in it.
+    const totalWithFootage = sortedPlays.filter(
+      (play) =>
+        slicesForGameRange(play.startTime, play.endTime, clips).length > 0,
+    ).length;
+    const outputName =
+      jobs.length === 1
+        ? `${gameTitle}-play-${jobs[0]!.playNumber}.mp4`
+        : selected && jobs.length < totalWithFootage
+          ? `${gameTitle}-${jobs.length}-plays.mp4`
+          : `${gameTitle}.mp4`;
 
     setExporting(true);
     setStatus("Loading video processor...");
@@ -378,7 +436,7 @@ export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
         output = await stitchPlays(encoded);
       }
 
-      downloadBlob(output, `${gameTitle}.mp4`);
+      downloadBlob(output, outputName);
 
       setStatus(
         failedCount > 0
@@ -397,6 +455,12 @@ export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
     ? Math.round((doneCount / playProgress.length) * 100)
     : 0;
 
+  const reset = () => {
+    if (exporting) return;
+    setStatus("");
+    setPlayProgress([]);
+  };
+
   return {
     exporting,
     status,
@@ -404,6 +468,7 @@ export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
     doneCount,
     overallPct,
     start: exportVideo,
+    reset,
   };
 }
 
@@ -448,7 +513,7 @@ export function ExportVideoButton({ plays, clips, gameTitle }: ExportSource) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <Button
-          onClick={() => void exp.start(muteAudio)}
+          onClick={() => void exp.start({ muteAudio })}
           disabled={exp.exporting || !plays.length || !clips.length}
         >
           <Download className="mr-2 h-4 w-4" />

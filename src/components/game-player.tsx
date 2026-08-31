@@ -36,6 +36,7 @@ import { ClipCacheButton } from "@/components/clip-cache-button";
 import { useClipCache } from "@/hooks/use-clip-cache";
 import type { PlayRecord, VideoClipRecord } from "@/types";
 import {
+  Download,
   HardDrive,
   List,
   Pause,
@@ -43,6 +44,10 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
+import {
+  ExportProgress,
+  useStitchedExport,
+} from "@/components/export-video-button";
 import { cn } from "@/lib/utils";
 import {
   PlayerStage,
@@ -86,6 +91,28 @@ export function GamePlayer({
   const wasPlayingRef = useRef(false);
   const seekTokenRef = useRef(0);
   const { persisted, persistPlayhead } = usePersistedPlayhead();
+
+  // Stitched export driven from the play list: select plays (or use a card's
+  // export icon), then export. Progress shows in a bottom sheet.
+  const gameTitle = `${awayTeam}-at-${homeTeam}`;
+  const exp = useStitchedExport({ plays, clips, gameTitle });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [exportOpen, setExportOpen] = useState(false);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const runExport = (playIds: string[]) => {
+    if (playIds.length === 0 || exp.exporting) return;
+    setExportOpen(true);
+    void exp.start({ muteAudio: viewerAudioMuted, playIds });
+  };
 
   const clipSources = useMemo(
     () => clips.map((clip) => ({ id: clip.id, blobUrl: clip.blobUrl })),
@@ -395,6 +422,20 @@ export function GamePlayer({
     />
   );
 
+  const selectedCount = selectedIds.size;
+  const exportSelectedButton = (
+    <Button
+      size="sm"
+      variant="outline"
+      className="rounded-xl"
+      disabled={selectedCount === 0 || exp.exporting}
+      onClick={() => runExport([...selectedIds])}
+    >
+      <Download className="h-3.5 w-3.5" />
+      {selectedCount > 0 ? `Export (${selectedCount})` : "Export"}
+    </Button>
+  );
+
   const renderPlayList = (constrained = false) => (
     <div
       className={cn(
@@ -407,54 +448,83 @@ export function GamePlayer({
         const index = segment.playIndex;
         const play = segment.play;
 
+        const isSelected = selectedIds.has(play.id);
+
         return (
-          <button
+          <div
             key={play.id}
-            type="button"
-            onClick={() => seekToPlay(index, true)}
             className={cn(
-              "rounded-xl border p-3.5 text-left transition-all max-lg:landscape:p-2.5",
-              index === currentIndex
-                ? "border-primary/40 bg-primary/5 shadow-sm ring-1 ring-primary/20"
-                : "border-border/80 bg-card hover:border-primary/20 hover:bg-muted/50",
+              "flex items-start gap-2.5 rounded-xl border p-3.5 transition-all max-lg:landscape:p-2.5",
+              isSelected
+                ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30"
+                : index === currentIndex
+                  ? "border-primary/40 bg-primary/5 shadow-sm ring-1 ring-primary/20"
+                  : "border-border/80 bg-card hover:border-primary/20 hover:bg-muted/50",
             )}
           >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="shrink-0 font-semibold text-foreground max-lg:landscape:text-sm">
-                  Play {segment.playNumber}
-                </span>
-                {play.offenseTeam ? (
-                  <span
-                    className={offenseTeamBadgeClass(
-                      play.offenseTeam,
-                      homeTeam,
-                      awayTeam,
-                    )}
-                  >
-                    {play.offenseTeam}
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer"
+              checked={isSelected}
+              onChange={() => toggleSelected(play.id)}
+              aria-label={`Select Play ${segment.playNumber}`}
+            />
+            <button
+              type="button"
+              onClick={() => seekToPlay(index, true)}
+              className="min-w-0 flex-1 text-left"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="shrink-0 font-semibold text-foreground max-lg:landscape:text-sm">
+                    Play {segment.playNumber}
                   </span>
-                ) : null}
+                  {play.offenseTeam ? (
+                    <span
+                      className={offenseTeamBadgeClass(
+                        play.offenseTeam,
+                        homeTeam,
+                        awayTeam,
+                      )}
+                    >
+                      {play.offenseTeam}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {cacheSupported &&
+                  isPlayCached(segment.globalStart, segment.globalEnd) ? (
+                    <HardDrive
+                      className="h-3.5 w-3.5 text-accent"
+                      aria-label="Cached for offline playback"
+                    />
+                  ) : null}
+                  <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                    {formatDuration(segment.duration)}
+                  </span>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {cacheSupported &&
-                isPlayCached(segment.globalStart, segment.globalEnd) ? (
-                  <HardDrive
-                    className="h-3.5 w-3.5 text-accent"
-                    aria-label="Cached for offline playback"
-                  />
-                ) : null}
-                <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                  {formatDuration(segment.duration)}
-                </span>
-              </div>
-            </div>
-            {play.notes && (
-              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground max-lg:landscape:line-clamp-1">
-                {play.notes}
-              </p>
-            )}
-          </button>
+              {play.notes && (
+                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground max-lg:landscape:line-clamp-1">
+                  {play.notes}
+                </p>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => runExport([play.id])}
+              disabled={exp.exporting}
+              title={`Export Play ${segment.playNumber}`}
+              aria-label={`Export Play ${segment.playNumber}`}
+              className={buttonVariants({
+                variant: "ghost",
+                size: "icon-sm",
+                className: "shrink-0 text-muted-foreground",
+              })}
+            >
+              <Download className="h-4 w-4" />
+            </button>
+          </div>
         );
       })}
     </div>
@@ -749,10 +819,13 @@ export function GamePlayer({
                   <SheetTitle className="font-heading">
                     {awayTeam} @ {homeTeam}
                   </SheetTitle>
-                  {cacheButton}
+                  <div className="flex items-center gap-2">
+                    {exportSelectedButton}
+                    {cacheButton}
+                  </div>
                 </div>
               </SheetHeader>
-              <div className="mt-4">{renderPlayList(true)}</div>
+              <div className="mt-4 px-4">{renderPlayList(true)}</div>
             </SheetContent>
           </Sheet>
         </div>
@@ -764,7 +837,10 @@ export function GamePlayer({
             <CardTitle className="font-heading text-lg max-lg:landscape:text-sm">
               Play list
             </CardTitle>
-            {cacheButton}
+            <div className="flex items-center gap-2">
+              {exportSelectedButton}
+              {cacheButton}
+            </div>
           </div>
         </CardHeader>
         <CardContent className={cn(playerPlayListContentClass, "p-4 max-lg:landscape:p-2")}>
@@ -772,6 +848,20 @@ export function GamePlayer({
         </CardContent>
       </Card>
       </div>
+
+      <Sheet open={exportOpen} onOpenChange={setExportOpen}>
+        <SheetContent
+          side="bottom"
+          className="flex h-[70vh] flex-col rounded-t-2xl"
+        >
+          <SheetHeader>
+            <SheetTitle className="font-heading">Export</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-4 pb-6">
+            <ExportProgress exp={exp} />
+          </div>
+        </SheetContent>
+      </Sheet>
     </PlayerStage>
   );
 }
