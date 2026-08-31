@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { PageShell } from "@/components/page-shell";
 import { GamePlayer } from "@/components/game-player";
-import { ExportVideoButton } from "@/components/export-video-button";
+import { ExportGameDrawer } from "@/components/export-game-drawer";
 import { Badge } from "@/components/ui/badge";
 import { formatGameDate } from "@/lib/video";
 import { getGameById } from "@/lib/games";
@@ -23,14 +23,24 @@ export default async function GameWatchPage({ params }: PageProps) {
     <PageShell>
       <main className="w-full px-4 py-6 max-lg:landscape:h-[calc(var(--visual-vh,100svh)-var(--site-header-height,2.75rem))] max-lg:landscape:overflow-hidden max-lg:landscape:px-2 max-lg:landscape:py-0 sm:px-6 sm:py-8">
         <div className="surface-card mb-8 p-6 max-lg:landscape:hidden">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
-            Now watching
-          </p>
-          <h1 className="mt-2 font-heading text-3xl font-bold tracking-tight sm:text-4xl">
-            <span className="text-muted-foreground">{game.awayTeam}</span>
-            <span className="mx-3 font-normal text-border">@</span>
-            {game.homeTeam}
-          </h1>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">
+                Now watching
+              </p>
+              <h1 className="mt-2 font-heading text-3xl font-bold tracking-tight sm:text-4xl">
+                <span className="text-muted-foreground">{game.awayTeam}</span>
+                <span className="mx-3 font-normal text-border">@</span>
+                {game.homeTeam}
+              </h1>
+            </div>
+            <ExportGameDrawer
+              plays={plays}
+              clips={game.videoClips ?? []}
+              gameTitle={`${game.awayTeam}-at-${game.homeTeam}`}
+              muteAudio={game.viewerAudioMuted}
+            />
+          </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Badge variant="secondary" className="gap-1.5 bg-primary/10 text-primary">
               <MapPin className="h-3 w-3" />
@@ -44,20 +54,6 @@ export default async function GameWatchPage({ params }: PageProps) {
               {plays.length} plays
             </Badge>
           </div>
-
-          {plays.length > 0 && (game.videoClips ?? []).length > 0 && (
-            <div className="mt-6 border-t border-border pt-6">
-              <ExportVideoButton
-                plays={plays}
-                clips={game.videoClips ?? []}
-                gameTitle={`${game.awayTeam}-at-${game.homeTeam}`}
-              />
-              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                Export stitches all active plays into a single video with play
-                numbers in a footer overlay.
-              </p>
-            </div>
-          )}
         </div>
 
         <GamePlayer

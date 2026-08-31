@@ -18,7 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 
-type ExportVideoButtonProps = {
+export type ExportSource = {
   plays: PlayRecord[];
   clips: VideoClipRecord[];
   gameTitle: string;
@@ -108,14 +108,11 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function ExportVideoButton({
-  plays,
-  clips,
-  gameTitle,
-}: ExportVideoButtonProps) {
+// Shared export engine. Owns progress state and the full encode/stitch/download
+// pipeline; UIs (the admin button, the viewer drawer) just call `start`.
+export function useStitchedExport({ plays, clips, gameTitle }: ExportSource) {
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState("");
-  const [muteAudio, setMuteAudio] = useState(false);
   const [playProgress, setPlayProgress] = useState<PlayProgress[]>([]);
 
   const setPlayStatus = (index: number, next: PlayStatus) => {
@@ -124,7 +121,8 @@ export function ExportVideoButton({
     );
   };
 
-  const exportVideo = async () => {
+  const exportVideo = async (mute: boolean) => {
+    if (exporting) return;
     const sortedPlays = sortPlays(plays);
     if (!sortedPlays.length || !clips.length) return;
 
@@ -161,7 +159,6 @@ export function ExportVideoButton({
     );
 
     const pool = getExportFfmpegPool();
-    const mute = muteAudio;
     // Muted exports drop audio entirely; otherwise re-encode to AAC.
     const audioArgs = mute ? ["-an"] : ["-c:a", "aac"];
 
@@ -400,55 +397,76 @@ export function ExportVideoButton({
     ? Math.round((doneCount / playProgress.length) * 100)
     : 0;
 
+  return {
+    exporting,
+    status,
+    playProgress,
+    doneCount,
+    overallPct,
+    start: exportVideo,
+  };
+}
+
+type StitchedExport = ReturnType<typeof useStitchedExport>;
+
+// Progress bar + per-play checklist, shared by the admin panel and the
+// viewer drawer.
+export function ExportProgress({ exp }: { exp: StitchedExport }) {
+  if (exp.playProgress.length === 0) {
+    return exp.status ? (
+      <p className="text-sm text-muted-foreground">{exp.status}</p>
+    ) : null;
+  }
+
+  return (
+    <div className="space-y-2">
+      <Progress value={exp.overallPct} />
+      <p className="text-sm text-muted-foreground">
+        {exp.status}
+        {exp.exporting && ` (${exp.doneCount}/${exp.playProgress.length})`}
+      </p>
+      <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
+        {exp.playProgress.map((play, index) => (
+          <li key={index} className="flex items-center gap-2 text-sm">
+            <PlayStatusIcon status={play.status} />
+            <span className="font-medium">{play.label}</span>
+            {play.detail && (
+              <span className="text-muted-foreground">{play.detail}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function ExportVideoButton({ plays, clips, gameTitle }: ExportSource) {
+  const [muteAudio, setMuteAudio] = useState(false);
+  const exp = useStitchedExport({ plays, clips, gameTitle });
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <Button
-          onClick={() => void exportVideo()}
-          disabled={exporting || !plays.length || !clips.length}
+          onClick={() => void exp.start(muteAudio)}
+          disabled={exp.exporting || !plays.length || !clips.length}
         >
           <Download className="mr-2 h-4 w-4" />
-          {exporting ? "Exporting..." : "Download stitched video"}
+          {exp.exporting ? "Exporting..." : "Download stitched video"}
         </Button>
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
           <input
             type="checkbox"
             className="h-4 w-4"
             checked={muteAudio}
-            disabled={exporting}
+            disabled={exp.exporting}
             onChange={(e) => setMuteAudio(e.target.checked)}
           />
           Mute audio
         </label>
       </div>
 
-      {playProgress.length > 0 && (
-        <div className="space-y-2">
-          <Progress value={overallPct} />
-          <p className="text-sm text-muted-foreground">
-            {status}
-            {exporting && ` (${doneCount}/${playProgress.length})`}
-          </p>
-          <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
-            {playProgress.map((play, index) => (
-              <li
-                key={index}
-                className="flex items-center gap-2 text-sm"
-              >
-                <PlayStatusIcon status={play.status} />
-                <span className="font-medium">{play.label}</span>
-                {play.detail && (
-                  <span className="text-muted-foreground">{play.detail}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {!exporting && status && playProgress.length === 0 && (
-        <p className="text-sm text-muted-foreground">{status}</p>
-      )}
+      <ExportProgress exp={exp} />
     </div>
   );
 }
